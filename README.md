@@ -122,27 +122,7 @@ Stores application-level runtime configuration.
 | `users.json` | Stores simple username/password pairs for authentication |
 | `server_config.json` | Stores server host, TCP control port, server root path, UDP timeout, buffer size, and retry limit |
 
-Example `users.json`:
 
-```json
-{
-  "stranger": "123456",
-  "admin": "admin123"
-}
-```
-
-Example `server_config.json`:
-
-```json
-{
-  "host": "127.0.0.1",
-  "control_port": 2121,
-  "server_root": "data/server_root",
-  "udp_buffer_size": 1400,
-  "udp_timeout": 1.0,
-  "max_retries": 10
-}
-```
 
 ---
 
@@ -155,12 +135,6 @@ Stores files used during upload/download testing.
 | `server_root/` | The FTP server's root directory. Clients can only access files inside this folder. |
 | `client_downloads/` | Stores files downloaded by the client. |
 
-The server must prevent path traversal attacks such as:
-
-```txt
-CWD ../../
-RETR ../../../secret.txt
-```
 
 ---
 
@@ -185,13 +159,6 @@ Stores final report materials.
 | `genai_log.md` | Documents all GenAI prompts, raw outputs, and manual refinements |
 | `diagrams/` | Stores sequence diagrams, flowcharts, and state machines used in the report |
 
-Diagrams:
-
-- TCP + UDP lifecycle sequence diagram.
-- Server thread dispatch flowchart.
-- Reliable UDP sender state machine.
-- Reliable UDP receiver state machine.
-- Active/Passive mode flowchart, if implemented.
 
 ---
 
