@@ -185,7 +185,7 @@ Stores final report materials.
 | `genai_log.md` | Documents all GenAI prompts, raw outputs, and manual refinements |
 | `diagrams/` | Stores sequence diagrams, flowcharts, and state machines used in the report |
 
-Recommended diagrams:
+Diagrams:
 
 - TCP + UDP lifecycle sequence diagram.
 - Server thread dispatch flowchart.
