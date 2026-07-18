@@ -3,3 +3,4 @@ __pycache__/
 logs/*.log
 hybrid-ftp/server/storage/*
 hybrid-ftp/client/storage/*
+.vs/
