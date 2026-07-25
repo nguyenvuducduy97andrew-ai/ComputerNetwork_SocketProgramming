@@ -1,10 +1,3 @@
-# # Cơ sở dữ liệu tài khoản cục bộ
-# USERS = {'admin': 'password123', 'anonymous': ''}
-
-# def authenticate(username, password) -> bool:
-#     # Hàm xác thực tài khoản USER/PASS
-#     return USERS.get(username) == password
-
 import json #import thư viện json để đọc file json
 from pathlib import Path #import thư viện pathlib để thao tác với đường dẫn
 
@@ -22,15 +15,20 @@ def load_user() -> dict[str, str]:
     """
     for p in USERS_FILES:
         try:
-            with p.open(mode="r", encoding="utf-8") as file:
+            #Câu lệnh mở file user.json để đọc dữ liệu, 'mode="r"'
+            #  nghĩa là mở file ở chế độ đọc, 'encoding="utf-8"'
+            #  nghĩa là sử dụng mã hóa UTF-8 để đọc dữ liệu từ file.
+            with p.open(mode="r", encoding="utf-8") as file: 
                 data = json.load(file)
-        except FileNotFoundError:
+        except FileNotFoundError: #Không tim thấy file user.json, tiếp tục tìm kiếm trong danh sách USERS_FILES
             continue
-        except json.JSONDecodeError as error:
+        #Khi đọc file user.json, nếu có lỗi xảy ra trong 
+        # quá trình giải mã JSON, in ra thông báo lỗi và trả về một dict rỗng.
+        except json.JSONDecodeError as error: 
             print(f"Error: Invalid {p.name} -> {error}")
             return {}
 
-        if not isinstance(data, dict):
+        if not isinstance(data, dict): #
             print(f"Error: {p.name} must contain a JSON object")
             return {}
 
