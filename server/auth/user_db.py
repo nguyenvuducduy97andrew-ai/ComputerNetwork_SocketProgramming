@@ -49,11 +49,37 @@ def load_user() -> dict[str, str]:
     print(f"Database not found: tried {[p.name for p in USERS_FILES]}")
     return {}
 
-
-def authenticate(username: str, password: str) -> bool:
+def user_exists(username: str) -> bool:
     users = load_user()
-    if username is None:
-        return False
-    return users.get(username) == password
+    return username in users
+
+def authenticate(username: str, password: str) -> tuple[bool, str]:
+    """Validate username and password.
+
+    Returns:
+        (True, "Login successful")
+        (False, "Invalid username")
+        (False, "Invalid password")
+    """
+    if username is None or username.strip() == "":
+        return False, "Invalid username"
+
+
+    users = load_user()
+
+    if not user_exists(username):
+        return False, "Invalid username"
+
+    if password is None or password == "":
+        return False, "Invalid password"
+
+    if users[username] != password:
+        return False, "Invalid password"
+
+    return True, "Login successful"
+    
+
+
+
 
 

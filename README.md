@@ -7,6 +7,7 @@
 ### Client
 - Là điểm khởi chạy phía người dùng để kết nối tới server và gửi các lệnh điều khiển.
 - Cung cấp lớp điều khiển CLI để tương tác với server và hiển thị trạng thái truyền nhận.
+- Tổ chức logic lệnh phía client theo `client/control/command_handler.py` và các handler trong `client/control/handlers/`.
 - Hỗ trợ các phần dùng chung để kiểm tra checksum, cấu trúc gói tin và theo dõi tiến trình truyền file.
 
 ### Server
@@ -35,7 +36,15 @@ python client/main_client.py
   - control/
     - __init__.py
     - client_control.py
-    - ui_monitor.py
+    - command_handler.py
+    - cli_monitor.py
+    - handlers/
+      - __init__.py
+      - common.py
+      - auth_handler.py
+      - navigation_handler.py
+      - transfer_setup_handler.py
+      - transfer_handler.py
 - server/
   - __init__.py
   - main_server.py

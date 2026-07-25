@@ -21,15 +21,23 @@ Khi cần gửi hoặc nhận file, client cũng tham gia vào việc chuẩn b�
 
 - `client/main_client.py`: điểm khởi chạy của client. File này mở kết nối tới server, hiển thị lời chào và tiếp tục hỏi lệnh từ người dùng.
 - `client/control/client_control.py`: lớp hỗ trợ gửi lệnh đến server và đọc phản hồi theo đúng cách server trả về.
+- `client/control/command_handler.py`: bộ điều phối lệnh phía client. File này nhận lệnh từ người dùng và chuyển đến handler phù hợp.
 - `client/control/cli_monitor.py`: nơi hiển thị tiến trình và trạng thái trong lúc truyền file.
+- `client/control/handlers/common.py`: các helper dùng chung để gửi lệnh, đọc phản hồi và in kết quả mà không lặp lại logic.
+- `client/control/handlers/auth_handler.py`: xử lý các lệnh đăng nhập và thoát ở phía client.
+- `client/control/handlers/navigation_handler.py`: xử lý các lệnh điều hướng thư mục như PWD, CWD, CDUP.
+- `client/control/handlers/transfer_setup_handler.py`: xử lý các lệnh thiết lập truyền như TYPE và MODE.
+- `client/control/handlers/transfer_handler.py`: xử lý các lệnh truyền file như RETR và STOR.
 - `client/__init__.py`: đánh dấu thư mục client là một gói Python.
 
 Cách các phần này phối hợp với nhau:
 
 1. Người dùng khởi chạy client từ `main_client.py`.
 2. `main_client.py` gửi từng lệnh qua `client_control.py`.
-3. Khi cần hiển thị tiến trình truyền, `cli_monitor.py` hỗ trợ hiển thị.
-4. Client tiếp tục hoạt động cho đến khi người dùng rời phiên làm việc.
+3. `client/control/command_handler.py` chuyển lệnh đến đúng file handler trong `client/control/handlers/`.
+4. `common.py` giúp các handler dùng chung cùng một cách gửi lệnh và đọc phản hồi.
+5. Khi cần hiển thị tiến trình truyền, `cli_monitor.py` hỗ trợ hiển thị.
+6. Client tiếp tục hoạt động cho đến khi người dùng rời phiên làm việc.
 
 ### Server
 
