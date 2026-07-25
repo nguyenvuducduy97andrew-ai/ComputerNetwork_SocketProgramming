@@ -1,137 +1,137 @@
-# Architecture Overview
+# Tổng quan kiến trúc
 
-## Purpose
+## Mục đích
 
-This project is a hybrid FTP-style application designed to move files between a client and a server in a clear two-part flow:
+Dự án này là một ứng dụng kiểu Hybrid FTP, được thiết kế để truyền tệp giữa client và server theo hai luồng rõ ràng:
 
-- TCP is used for conversation and control.
-- UDP with RDT is used for file transfer.
+- TCP dùng cho trao đổi lệnh và điều khiển.
+- UDP kết hợp RDT dùng cho truyền dữ liệu tệp.
 
-The goal is to keep the control channel simple and reliable while using a more robust transfer process for file data.
+Mục tiêu là giữ cho kênh điều khiển đơn giản, ổn định, đồng thời dùng một cơ chế truyền dữ liệu chắc chắn hơn cho phần file.
 
-## Main Parts
+## Các phần chính
 
 ### Client
 
-The client is the user-facing side of the application.
-It starts the connection, accepts commands from the user, and shows the server responses.
-When a file needs to be sent or received, the client also takes part in preparing the data transfer.
+Client là phần dành cho người dùng của ứng dụng.
+Nó mở kết nối, nhận lệnh từ người dùng và hiển thị phản hồi từ server.
+Khi cần gửi hoặc nhận file, client cũng tham gia vào việc chuẩn bị quá trình truyền dữ liệu.
 
-#### Client folder structure
+#### Cấu trúc thư mục client
 
-- `client/main_client.py`: the starting point for the client. It opens the connection to the server, shows the welcome message, and keeps asking the user for commands.
-- `client/control/client_control.py`: the helper layer for sending commands to the server and reading replies in the same way the server sends them.
-- `client/control/cli_monitor.py`: the place for showing progress and status while a file is being transferred.
-- `client/__init__.py`: marks the client folder as a Python package.
+- `client/main_client.py`: điểm khởi chạy của client. File này mở kết nối tới server, hiển thị lời chào và tiếp tục hỏi lệnh từ người dùng.
+- `client/control/client_control.py`: lớp hỗ trợ gửi lệnh đến server và đọc phản hồi theo đúng cách server trả về.
+- `client/control/cli_monitor.py`: nơi hiển thị tiến trình và trạng thái trong lúc truyền file.
+- `client/__init__.py`: đánh dấu thư mục client là một gói Python.
 
-How these parts work together:
+Cách các phần này phối hợp với nhau:
 
-1. The user starts the client from `main_client.py`.
-2. `main_client.py` sends each command through `client_control.py`.
-3. When transfer progress needs to be shown, `cli_monitor.py` helps display it.
-4. The client stays active until the user leaves the session.
+1. Người dùng khởi chạy client từ `main_client.py`.
+2. `main_client.py` gửi từng lệnh qua `client_control.py`.
+3. Khi cần hiển thị tiến trình truyền, `cli_monitor.py` hỗ trợ hiển thị.
+4. Client tiếp tục hoạt động cho đến khi người dùng rời phiên làm việc.
 
 ### Server
 
-The server is the central side of the application.
-It receives the client connection, checks the user's requests, manages session state, and decides how each command should be handled.
-It also coordinates the file transfer process and keeps track of what is being uploaded or downloaded.
+Server là phần trung tâm của ứng dụng.
+Nó nhận kết nối từ client, kiểm tra yêu cầu của người dùng, quản lý trạng thái phiên và quyết định cách xử lý từng lệnh.
+Server cũng điều phối quá trình truyền file và theo dõi file đang được upload hoặc download.
 
-#### Server folder structure
+#### Cấu trúc thư mục server
 
-- `server/main_server.py`: the server starting point. It listens for client connections, creates a separate session for each client, and forwards commands to the command handler.
-- `server/auth/user_db.py`: the simple user-checking layer. It verifies whether the login information is valid.
-- `server/auth/user.json`: sample user data used by the login flow.
-- `server/control/command_handler.py`: the main command dispatcher. It decides which action should run for each command sent by the client.
-- `server/control/ftp_codes.py`: the reply list used by the server. It keeps the status messages consistent.
-- `server/control/session.py`: the session memory for one connected client. It stores login state, current folder, and transfer status.
-- `server/control/handlers/auth_handler.py`: handles login and logout-related actions.
-- `server/control/handlers/navigation_handler.py`: handles folder-related actions such as showing the current folder or moving to another folder.
-- `server/control/handlers/transfer_setup_handler.py`: handles transfer settings such as file type and transfer mode.
-- `server/control/handlers/transfer_handler.py`: handles file transfer requests and prepares the transfer state.
-- `server/__init__.py`: marks the server folder as a Python package.
+- `server/main_server.py`: điểm khởi chạy của server. File này lắng nghe kết nối từ client, tạo một phiên riêng cho mỗi client và chuyển lệnh tới bộ xử lý lệnh.
+- `server/auth/user_db.py`: lớp kiểm tra người dùng đơn giản. Nó xác minh thông tin đăng nhập có hợp lệ hay không.
+- `server/auth/user.json`: dữ liệu mẫu của người dùng dùng cho luồng đăng nhập.
+- `server/control/command_handler.py`: bộ điều phối lệnh chính. Nó quyết định hành động nào sẽ chạy cho mỗi lệnh client gửi lên.
+- `server/control/ftp_codes.py`: danh sách phản hồi của server. File này giúp các thông báo trạng thái được thống nhất.
+- `server/control/session.py`: bộ nhớ phiên của một client đang kết nối. Nó lưu trạng thái đăng nhập, thư mục hiện tại và trạng thái truyền.
+- `server/control/handlers/auth_handler.py`: xử lý các hành động liên quan đến đăng nhập và đăng xuất.
+- `server/control/handlers/navigation_handler.py`: xử lý các hành động liên quan đến thư mục, như xem thư mục hiện tại hoặc di chuyển sang thư mục khác.
+- `server/control/handlers/transfer_setup_handler.py`: xử lý các thiết lập truyền như kiểu dữ liệu và chế độ truyền.
+- `server/control/handlers/transfer_handler.py`: xử lý các yêu cầu truyền file và chuẩn bị trạng thái truyền.
+- `server/__init__.py`: đánh dấu thư mục server là một gói Python.
 
-How these parts work together:
+Cách các phần này phối hợp với nhau:
 
-1. The server starts from `main_server.py`.
-2. A client connects, and the server creates a session using `session.py`.
-3. `command_handler.py` sends each user request to the correct handler.
-4. The handler files take care of login, folder navigation, and transfer preparation.
-5. `ftp_codes.py` provides the response messages that are sent back to the client.
-6. `user_db.py` checks the login details against the sample user data in `user.json`.
+1. Server được khởi chạy từ `main_server.py`.
+2. Một client kết nối vào, và server tạo một session bằng `session.py`.
+3. `command_handler.py` chuyển từng yêu cầu của người dùng đến đúng bộ xử lý.
+4. Các file handler đảm nhiệm phần đăng nhập, điều hướng thư mục và chuẩn bị truyền file.
+5. `ftp_codes.py` cung cấp các thông điệp phản hồi gửi về cho client.
+6. `user_db.py` kiểm tra thông tin đăng nhập với dữ liệu mẫu trong `user.json`.
 
-## TCP Control Flow
+## Luồng điều khiển TCP
 
-TCP is used for the control conversation between the client and the server.
-This channel handles the normal request and response exchange.
+TCP được dùng cho phần trao đổi điều khiển giữa client và server.
+Kênh này xử lý luồng yêu cầu và phản hồi thông thường.
 
-Typical control flow:
+Luồng điều khiển điển hình:
 
-1. The client connects to the server.
-2. The server sends a welcome message.
-3. The client sends login information.
-4. The server accepts or rejects the login.
-5. The client sends commands such as checking the current folder, changing folders, or starting a file transfer.
-6. The server answers each command with a clear status message.
+1. Client kết nối tới server.
+2. Server gửi một thông báo chào mừng.
+3. Client gửi thông tin đăng nhập.
+4. Server chấp nhận hoặc từ chối đăng nhập.
+5. Client gửi các lệnh như xem thư mục hiện tại, đổi thư mục, hoặc bắt đầu truyền file.
+6. Server trả lời từng lệnh bằng một thông báo trạng thái rõ ràng.
 
-This control flow stays active for the full session, so the user can keep sending commands until they choose to quit.
+Luồng điều khiển này được giữ trong suốt phiên làm việc, nên người dùng có thể tiếp tục gửi lệnh cho đến khi chọn thoát.
 
-## UDP Data Transfer Flow With RDT
+## Luồng truyền dữ liệu UDP với RDT
 
-UDP is used for the actual file data transfer.
-Because UDP does not guarantee delivery by itself, the project adds RDT to make the transfer more dependable.
+UDP được dùng cho phần truyền dữ liệu thực tế của file.
+Vì UDP không tự đảm bảo việc giao hàng đầy đủ, dự án thêm RDT để việc truyền ổn định hơn.
 
-RDT helps the transfer by:
+RDT hỗ trợ quá trình truyền bằng cách:
 
-- breaking file data into smaller pieces,
-- attaching information that helps identify and verify each piece,
-- checking whether the data arrived correctly,
-- sending missing pieces again when needed,
-- continuing until the full file has been transferred.
+- chia dữ liệu file thành các phần nhỏ hơn,
+- gắn thông tin giúp nhận diện và kiểm tra từng phần,
+- kiểm tra xem dữ liệu có đến đúng hay không,
+- gửi lại những phần bị thiếu khi cần,
+- tiếp tục cho đến khi toàn bộ file được truyền xong.
 
-This approach keeps the transfer faster than a fully managed stream while still protecting against packet loss and corruption.
+Cách làm này giúp việc truyền nhanh hơn so với một luồng được quản lý hoàn toàn, nhưng vẫn bảo vệ khỏi mất gói và lỗi dữ liệu.
 
-## Short Diagram
+## Sơ đồ ngắn
 
 ```mermaid
 flowchart LR
-	User[User] --> Client[Client]
-	Client -->|TCP commands| Server[Server]
-	Server -->|TCP replies| Client
-	Client -->|request upload/download| Server
-	Server -->|UDP data with RDT| Client
-	Client -->|ACKs and resend support| Server
+	NguoiDung[Người dùng] --> Client[Client]
+	Client -->|Lệnh TCP| Server[Server]
+	Server -->|Phản hồi TCP| Client
+	Client -->|Yêu cầu upload/download| Server
+	Server -->|Dữ liệu UDP với RDT| Client
+	Client -->|ACK và hỗ trợ gửi lại| Server
 ```
 
-This simple view shows that TCP carries the commands and responses, while UDP with RDT carries the file data itself.
+Sơ đồ này cho thấy TCP dùng để truyền lệnh và phản hồi, còn UDP với RDT dùng để truyền chính dữ liệu file.
 
-## Shared Support Files
+## Các file hỗ trợ dùng chung
 
-The `shared` folder supports both client and server.
+Thư mục `shared` hỗ trợ cả client lẫn server.
 
-- `shared/checksum.py`: checks whether transferred data has been changed or damaged.
-- `shared/constants.py`: stores common values used by the transfer logic.
-- `shared/packet_struct.py`: defines how data packets are built and read.
-- `shared/rdt_core.py`: contains the reliable transfer logic that makes UDP behave more safely for file delivery.
+- `shared/checksum.py`: kiểm tra xem dữ liệu truyền đi có bị thay đổi hoặc hỏng hay không.
+- `shared/constants.py`: lưu các giá trị dùng chung cho logic truyền dữ liệu.
+- `shared/packet_struct.py`: định nghĩa cách đóng gói và đọc các gói dữ liệu.
+- `shared/rdt_core.py`: chứa logic truyền tin cậy giúp UDP hoạt động an toàn hơn cho việc gửi file.
 
-These shared files are part of the system glue. They do not represent the user flow by themselves, but they help both sides speak the same transfer language.
+Các file dùng chung này là phần kết nối giữa hai phía. Chúng không tự tạo ra luồng người dùng, nhưng giúp cả hai bên “nói cùng một ngôn ngữ” khi truyền dữ liệu.
 
-## End-to-End Flow
+## Luồng tổng thể
 
-A normal session follows this order:
+Một phiên làm việc thông thường diễn ra theo thứ tự sau:
 
-1. The client opens a TCP connection to the server.
-2. The client logs in and sends commands through TCP.
-3. The server prepares the transfer when the user requests upload or download.
-4. The file data moves over UDP using RDT.
-5. The server and client confirm when the transfer is complete.
-6. The session ends when the user quits.
+1. Client mở kết nối TCP đến server.
+2. Client đăng nhập và gửi lệnh qua TCP.
+3. Server chuẩn bị truyền khi người dùng yêu cầu upload hoặc download.
+4. Dữ liệu file đi qua UDP bằng RDT.
+5. Server và client xác nhận khi truyền xong.
+6. Phiên làm việc kết thúc khi người dùng thoát.
 
-## Why This Design
+## Vì sao thiết kế như vậy
 
-This design separates communication into two layers:
+Thiết kế này tách giao tiếp thành hai lớp:
 
-- TCP keeps the command channel easy to understand and dependable.
-- UDP with RDT keeps file transfer flexible while still handling network problems.
+- TCP giúp kênh lệnh dễ hiểu và đáng tin cậy.
+- UDP với RDT giúp truyền file linh hoạt hơn nhưng vẫn xử lý được các vấn đề mạng.
 
-That separation makes the system easier to follow, easier to maintain, and better suited for learning how file transfer systems work.
+Sự tách biệt này làm cho hệ thống dễ theo dõi hơn, dễ bảo trì hơn và phù hợp hơn cho mục đích học cách hệ thống truyền file hoạt động.

@@ -1,6 +1,18 @@
 # Đồ Án Hybrid FTP Application
 
-Hệ thống truyền tải tệp tin phân tách Control Plane (TCP) và Data Plane (UDP - RDT).
+Ứng dụng truyền tải tệp tin theo mô hình Hybrid FTP, trong đó kênh điều khiển dùng TCP để xử lý đăng nhập và lệnh FTP-like, còn kênh dữ liệu dùng UDP kết hợp cơ chế RDT để truyền tệp tin ổn định hơn trong môi trường mạng không tin cậy.
+
+## Vai trò của từng thành phần
+
+### Client
+- Là điểm khởi chạy phía người dùng để kết nối tới server và gửi các lệnh điều khiển.
+- Cung cấp lớp điều khiển CLI để tương tác với server và hiển thị trạng thái truyền nhận.
+- Hỗ trợ các phần dùng chung để kiểm tra checksum, cấu trúc gói tin và theo dõi tiến trình truyền file.
+
+### Server
+- Lắng nghe kết nối TCP và quản lý từng phiên làm việc của client.
+- Xử lý xác thực người dùng, điều hướng thư mục, thiết lập chế độ truyền và các lệnh FTP cơ bản như `USER`, `PASS`, `PWD`, `CWD`, `CDUP`, `TYPE`, `MODE`, `RETR`, `STOR`, `QUIT`.
+- Quản lý trạng thái truyền file, thư mục làm việc, và logic cho kênh dữ liệu UDP/RDT.
 
 ## 🚀 Hướng dẫn khởi chạy nhanh
 
@@ -61,13 +73,13 @@ python client/main_client.py
 
 ## 🧭 Trạng thái hiện tại
 
-- Ứng dụng FTP hybrid tách riêng Control Plane (TCP) và Data Plane (UDP với cơ chế RDT).
-- `server/main_server.py` là điểm khởi chạy cho máy chủ.
-- `client/main_client.py` là điểm khởi chạy cho máy khách.
-- `server/auth` chứa xử lý xác thực người dùng và dữ liệu người dùng mẫu.
-- `server/control` xử lý lệnh điều khiển, mã FTP và phiên làm việc.
-- `shared` chứa các module dùng chung: checksum, cấu trúc gói và RDT.
-- `tests` chứa bài kiểm tra cho hàm checksum và kênh RDT mất gói.
+- Ứng dụng được chia thành hai phần rõ ràng: client cho tương tác người dùng và server cho xử lý nghiệp vụ truyền file. Tách riêng Control Plane (TCP) và Data Plane (UDP với cơ chế RDT).
+- `server/main_server.py` là điểm khởi chạy cho máy chủ TCP và vòng lặp xử lý từng client theo luồng riêng.
+- `client/main_client.py` là điểm khởi chạy cho phía client.
+- `server/auth` chứa xác thực người dùng và dữ liệu tài khoản mẫu.
+- `server/control` chứa bộ xử lý lệnh FTP-like, mã phản hồi và trạng thái phiên.
+- `shared` chứa các thành phần dùng chung cho checksum, cấu trúc gói tin và lõi RDT.
+- `tests` chứa kiểm thử cho checksum và hành vi truyền trên kênh RDT trong môi trường mất gói.
 
 ## �👥 Phân công công việc
 - **Thành viên A (Chủ trì Kênh Dữ liệu):** Chịu trách nhiệm gói `shared/` và môi trường `tests/`.
