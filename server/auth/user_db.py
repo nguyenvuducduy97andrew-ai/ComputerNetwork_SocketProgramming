@@ -1,83 +1,30 @@
 import json #import thư viện json để đọc file json
 from pathlib import Path #import thư viện pathlib để thao tác với đường dẫn
 
-USERS_FILES = [
-    Path(__file__).parent / "user.json",
-]
+USER_FILE = Path(__file__).resolve().parent / "user.json"
 
-
-def load_user() -> dict[str, str]:
-    """Load users from either `user.json` or `users.json` and return a mapping username->password.
-
-    Supported JSON formats:
-    - { "user": "password", ... }
-    - { "user": { "password": "..." }, ... }
-    """
-    for p in USERS_FILES:
-        try:
-            #Câu lệnh mở file user.json để đọc dữ liệu, 'mode="r"'
-            #  nghĩa là mở file ở chế độ đọc, 'encoding="utf-8"'
-            #  nghĩa là sử dụng mã hóa UTF-8 để đọc dữ liệu từ file.
-            with p.open(mode="r", encoding="utf-8") as file: 
-                data = json.load(file)
-        except FileNotFoundError: #Không tim thấy file user.json, tiếp tục tìm kiếm trong danh sách USERS_FILES
-            continue
-        #Khi đọc file user.json, nếu có lỗi xảy ra trong 
-        # quá trình giải mã JSON, in ra thông báo lỗi và trả về một dict rỗng.
-        except json.JSONDecodeError as error: 
-            print(f"Error: Invalid {p.name} -> {error}")
-            return {}
-
-        if not isinstance(data, dict): #
-            print(f"Error: {p.name} must contain a JSON object")
-            return {}
-
-        # Normalize formats
-        normalized: dict[str, str] = {}
-        for user, val in data.items():
-            if isinstance(val, str):
-                normalized[user] = val
-            elif isinstance(val, dict) and "password" in val:
-                normalized[user] = val.get("password") or ""
-            else:
-                # Unknown entry format, skip
-                continue
-
-        return normalized
-
-    # No file found
-    print(f"Database not found: tried {[p.name for p in USERS_FILES]}")
-    return {}
+def load_user() -> dict:
+    with USER_FILE.open("r", encoding="utf-8") as file:
+        return json.load(file)
 
 def user_exists(username: str) -> bool:
+    print(f"[user_db] JSON path: {USER_FILE}")
+    print(f"[user_db] File exists: {USER_FILE.exists()}")
+
     users = load_user()
+
+    print(f"[user_db] Loaded users: {list(users.keys())}")
+    print(f"[user_db] Checking username: {username!r}")
+
     return username in users
 
-def authenticate(username: str, password: str) -> tuple[bool, str]:
-    """Validate username and password.
-
-    Returns:
-        (True, "Login successful")
-        (False, "Invalid username")
-        (False, "Invalid password")
-    """
-    if username is None or username.strip() == "":
-        return False, "Invalid username"
-
-
+def authenticate(username: str, password: str) -> bool:
+    if username is None or password is None:
+        return False
     users = load_user()
-
-    if not user_exists(username):
-        return False, "Invalid username"
-
-    if password is None or password == "":
-        return False, "Invalid password"
-
-    if users[username] != password:
-        return False, "Invalid password"
-
-    return True, "Login successful"
-    
+    if username not in users:
+        return False
+    return users[username].get("password") == password
 
 
 

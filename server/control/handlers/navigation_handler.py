@@ -22,10 +22,12 @@ def validate_directory(session: ClientSession, directory: str) -> bool:
     return True
 
 def handle_pwd(session: ClientSession) -> str:
+    print(f"[navigation_handler] Handling PWD command. Current directory: {session.get_display_current_directory()}")
     current_directory = session.get_display_current_directory()
     return FTPReplyCode.PATH_CREATED.format(f'"{current_directory}"')
 
 def handle_cwd(session: ClientSession, args: str | None) -> str:
+    print(f"[navigation_handler] Handling CWD command for directory: {args!r}")
     if not args:
         return FTPReplyCode.SYNTAX_ERROR.format("Missing directory argument.")
 
