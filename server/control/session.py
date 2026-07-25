@@ -29,7 +29,7 @@ class ClientSession:
     # "Hãy gửi UDP tới IP/port này"
     active_data_address: tuple[str, int] | None = None 
 
-    pasive_udp_socket: socket | None = None
+    passive_udp_socket: socket | None = None
     passive_udp_port: int | None = None #cổng udp mở trong passive mode
     # Lệnh rename dùng 2 bước:
     # RNFR old.txt rename from
@@ -50,6 +50,7 @@ class ClientSession:
         return (self.server_root.resolve()/self.current_directory).resolve()
 
     def get_display_current_directory(self) -> str:
+        print(f"[ClientSession] Getting display current directory. Current directory: {self.current_directory}")
         if self.current_directory == Path("."):
             return "/"
 
@@ -59,6 +60,7 @@ class ClientSession:
         """
         Đóng và xóa thông tin data channel hiện tại.
         """
+        print(f"[ClientSession] Resetting data connection.")
         if self.passive_udp_socket is not None:
             try:
                 self.passive_udp_socket.close()
@@ -74,6 +76,7 @@ class ClientSession:
         """
         Đánh dấu session đang bắt đầu truyền file.
         """
+        print(f"[ClientSession] Starting transfer. File: {file_path}, Direction: {direction}, Expected size: {expected_size} bytes")
         self.transfer_in_progress = True
         self.current_transfer_file = file_path
         self.current_transfer_direction = direction
@@ -85,6 +88,7 @@ class ClientSession:
         """
         Reset trạng thái sau khi truyền xong or thất bại.
         """
+        print(f"[ClientSession] Finishing transfer. File: {self.current_transfer_file}, Direction: {self.current_transfer_direction}")
         self.transfer_in_progress = False
         self.current_transfer_file = None
         self.current_transfer_direction = None
@@ -96,6 +100,7 @@ class ClientSession:
         """
         Client gửi lệnh ABOR -> gọi hàm này.
         """
+        print(f"[ClientSession] Requesting abort of transfer. File: {self.current_transfer_file}, Direction: {self.current_transfer_direction}")
         if self.transfer_in_progress:
             self.cancel_event.set()
 
@@ -103,12 +108,14 @@ class ClientSession:
         """
         Xóa trạng thái RNFR đang chờ RNTO.
         """
+        print(f"[ClientSession] Resetting rename state.")
         self.pending_rename_path = None
 
     def logout(self) -> None:
         """
         Client log out -> Reset trạng thái đăng nhập của Client.
         """
+        print(f"[ClientSession] Logging out user: {self.username!r}")
         self.username = None
         self.authenticated = False
         self.reset_rename_state()

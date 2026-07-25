@@ -6,20 +6,23 @@ from server.control.session import ClientSession
 #Mode: Mode là lệnh để thiết lập chế độ truyền dữ liệu (Stream, Block, Compressed)
 
 def handle_type(session: ClientSession, args: str | None) -> str:
+    print(f"[transfer_setup_handler] Handling TYPE command with argument: {args!r}")
     if not args:
         return FTPReplyCode.SYNTAX_ERROR.format("Missing type argument.")
 
     if args.upper() not in ["A", "I"]:
         return FTPReplyCode.SYNTAX_ERROR.format("Invalid type argument. Use 'A' for ASCII or 'I' for Binary.")
-
+    print(f"[transfer_setup_handler] Setting transfer type to: {args.upper()}")
     session.transfer_type = args.upper()
     return FTPReplyCode.COMMAND_OK.format(f"Transfer type set to {session.transfer_type}.")
 
 def handle_mode(session: ClientSession, args: str | None) -> str:
+    print(f"[transfer_setup_handler] Handling MODE command with argument: {args!r}")
     if not args:
         return FTPReplyCode.SYNTAX_ERROR.format("Missing mode argument.")
 
     if args.upper() not in ["S", "B", "C"]:
         return FTPReplyCode.SYNTAX_ERROR.format("Invalid mode argument. Use 'S' for Stream, 'B' for Block, or 'C' for Compressed.")
+    print(f"[transfer_setup_handler] Setting transfer mode to: {args.upper()}")
     session.transfer_mode = args.upper()
     return FTPReplyCode.COMMAND_OK.format(f"Transfer mode set to {session.transfer_mode}.")

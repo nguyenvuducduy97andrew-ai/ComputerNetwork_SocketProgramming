@@ -18,7 +18,7 @@ def validate_directory(session: ClientSession, directory: str) -> bool:
     # Kiểm tra xem new_directory có nằm trong server_root không
     if not str(new_directory).startswith(str(session.server_root.resolve())):
         return False
-
+    print(f"[navigation_handler] Validated directory: {new_directory}")
     return True
 
 def handle_pwd(session: ClientSession) -> str:
@@ -40,6 +40,7 @@ def handle_cwd(session: ClientSession, args: str | None) -> str:
     return FTPReplyCode.COMMAND_OK.format(f"Changed working directory to {session.get_display_current_directory()}")
 
 def handle_cdup(session: ClientSession) -> str:
+    print(f"[navigation_handler] Handling CDUP command. Current directory: {session.get_display_current_directory()}")
     parent_directory = session.get_absolute_current_directory().parent
     # Kiểm tra xem parent_directory có tồn tại và là một thư mục không
     if not validate_directory(session, parent_directory.name):

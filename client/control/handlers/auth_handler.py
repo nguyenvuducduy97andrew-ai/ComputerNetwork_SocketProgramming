@@ -8,7 +8,7 @@ from client.control.handlers.common import send_and_print
 def handle_user(control: ControlConnection, args: str | None) -> bool:
     username = args.strip() if args else ""
     if not username:
-        print("Thiếu tên người dùng cho lệnh USER.")
+        print("Missing username for USER command.")
         return True
 
     send_and_print(control, f"USER {username}")
@@ -18,7 +18,7 @@ def handle_user(control: ControlConnection, args: str | None) -> bool:
 def handle_pass(control: ControlConnection, args: str | None) -> bool:
     password = args.strip() if args else ""
     if not password:
-        print("Thiếu mật khẩu cho lệnh PASS.")
+        print("Missing password for PASS command.")
         return True
 
     send_and_print(control, f"PASS {password}")

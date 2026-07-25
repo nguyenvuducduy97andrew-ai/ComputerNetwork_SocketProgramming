@@ -16,30 +16,47 @@ def handle_client(conn: socket.socket, addr: tuple[str, int], server_root: Path)
 
             session = ClientSession(client_address=addr, server_root=server_root)
 
+            buffer = bytearray()
+
             while True:
                 data = conn.recv(1024)
                 if not data:
                     break
+                buffer.extend(data)
 
-                line = data.decode('utf-8', errors='ignore').strip('\r\n')
-                if not line:
-                    continue
+                while b"\r\n" in buffer:
+                    raw_line, _, remaining = buffer.partition(b"\r\n")
+                    buffer = bytearray(remaining)
+                    line = raw_line.decode('utf-8', errors='ignore').strip('\r\n')
+                    if not line:
+                        continue
 
-                parts = line.split(' ', 1)
-                command = parts[0].upper()
-                args = parts[1] if len(parts) > 1 else None
+                    parts = line.split(' ', 1)
+                    command = parts[0].upper()
+                    args = parts[1] if len(parts) > 1 else None
 
-                response = handle_command(session, command, args)
-                try:
-                    conn.sendall(response.encode())
-                except OSError:
-                    break
+                    if args:
+                        print(f"[{addr[0]}:{addr[1]}] Received command: {command} {args}")
+                    else:
+                        print(f"[{addr[0]}:{addr[1]}] Received command: {command}")
 
-                if command == 'QUIT':
-                    break
+                    response = handle_command(session, command, args)
 
-        except Exception:
+                    print(f"[{addr[0]}:{addr[1]}] Sent response: {response.strip()}")
+
+                    try:
+                        conn.sendall(response.encode())
+                        print(f"[{addr[0]}:{addr[1]}] Response sent successfully.")
+                    except OSError as exc:
+                        print(f"[{addr[0]}:{addr[1]}] Error sending response: {exc}")
+                        break
+
+                    if command == 'QUIT':
+                        return
+
+        except Exception as exc:
             # On unexpected error, try to close connection gracefully
+            print(f"[{addr[0]}:{addr[1]}] Unexpected error occurred: {exc}")
             try:
                 conn.sendall(FTPReplyCode.SERVICE_UNAVAILABLE.format().encode())
             except Exception:
@@ -47,20 +64,24 @@ def handle_client(conn: socket.socket, addr: tuple[str, int], server_root: Path)
 
 
 def run_server(host: str = '0.0.0.0', port: int = 2121) -> None:
-    server_root = Path('data/server_storage')
+    server_root = Path("data").resolve()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        print(f"Starting Hybrid FTP Server on {host}:{port}...")
         srv.bind((host, port))
+        print(f"Server root directory: {server_root.resolve()}")
         srv.listen(5)
         print(f'Server FTP listening on {host}:{port}...')
 
         try:
             while True:
                 conn, addr = srv.accept()
+                print(f"Received connection from {addr[0]}:{addr[1]}")
                 thread = threading.Thread(target=handle_client, args=(conn, addr, server_root), daemon=True)
                 thread.start()
+                print(f"Started thread {thread.name} for {addr[0]}:{addr[1]}")
         except KeyboardInterrupt:
-            print('\nShutting down server...')
+            print("Shutting down server...")
 
 
 if __name__ == '__main__':

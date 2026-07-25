@@ -7,27 +7,30 @@ from server.control.session import ClientSession
 
 
 def handle_retr(session: ClientSession, args: str | None) -> str:
+    print(f"[transfer_handler] Handling RETR command for filename: {args!r}")
     if not args:
         return FTPReplyCode.SYNTAX_ERROR.format("Missing filename argument.")
-
+    print(f"[transfer_handler] Validating file path and access for RETR command: {args!r}")
     file_path = session.get_absolute_current_directory() / args
 
     if not file_path.exists() or not file_path.is_file():
         return FTPReplyCode.FILE_UNAVAILABLE.format("File does not exist.")
-
+    print(f"[transfer_handler] File path validated for RETR command: {file_path}")
     # Cài đặt trạng thái truyền file trong session
     session.start_transfer(file_path, direction="RETR")
     return FTPReplyCode.COMMAND_OK.format(f"Ready to send {args}.")
 
 def handle_stor(session: ClientSession, args: str | None) -> str:
+    print(f"[transfer_handler] Handling STOR command for filename: {args!r}")
     if not args:
         return FTPReplyCode.SYNTAX_ERROR.format("Missing filename argument.")
 
     file_path = session.get_absolute_current_directory() / args
+    print(f"[transfer_handler] Validating file path and access for STOR command: {file_path}")
     # Kiểm tra xem file_path có nằm trong server_root không
     if not str(file_path).startswith(str(session.server_root.resolve())):
         return FTPReplyCode.FILE_UNAVAILABLE.format("Access denied.")
-
+    print(f"[transfer_handler] File path validated for STOR command: {file_path}")
     # Cài đặt trạng thái truyền file trong session
     session.start_transfer(file_path, direction="STOR")
     return FTPReplyCode.COMMAND_OK.format(f"Ready to receive {args}.")
