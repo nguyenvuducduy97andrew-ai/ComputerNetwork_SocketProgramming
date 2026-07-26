@@ -1,6 +1,6 @@
 # Đồ Án Hybrid FTP Application
 
-Ứng dụng truyền tải tệp tin theo mô hình Hybrid FTP, trong đó kênh điều khiển dùng TCP để xử lý đăng nhập và lệnh FTP-like, còn kênh dữ liệu dùng UDP kết hợp cơ chế RDT để truyền tệp tin ổn định hơn trong môi trường mạng không tin cậy.
+Ứng dụng truyền tải tệp tin theo mô hình Hybrid FTP, trong đó kênh điều khiển dùng TCP để xử lý đăng nhập và lệnh FTP-like, còn kênh dữ liệu dùng UDP kết hợp cơ chế RDT (Reliable Data Transfer) tự phát triển để truyền tệp tin ổn định hơn trong môi trường mạng không tin cậy.
 
 ## Vai trò của từng thành phần
 
@@ -15,6 +15,12 @@
 - Xử lý xác thực người dùng, điều hướng thư mục, thiết lập chế độ truyền và các lệnh FTP cơ bản như `USER`, `PASS`, `PWD`, `CWD`, `CDUP`, `TYPE`, `MODE`, `RETR`, `STOR`, `QUIT`.
 - Quản lý trạng thái truyền file, thư mục làm việc, và logic cho kênh dữ liệu UDP/RDT.
 
+### Shared (Data Plane & RDT Core)
+- **Đóng gói dữ liệu:** Cấu trúc Header nhị phân 13 bytes tuần tự hóa theo chuẩn Network Byte Order (Big-Endian).
+- **Phát hiện lỗi bit:** Thuật toán Internet Checksum 16-bit kiểm tra tính toàn vẹn cho từng gói tin UDP.
+- **Truyền tin cậy:** Cơ chế cửa sổ trượt Go-Back-N ($N=8$), kết hợp Fast Retransmit (3 Duplicate ACKs) và Timeout Retransmit ($RTO = 0.3s$).
+- **Xác thực End-to-End:** Mã băm SHA-256 đối chiếu toàn vẹn dữ liệu file trước và sau khi truyền.
+
 ## 🚀 Hướng dẫn khởi chạy nhanh
 
 ### 1. Phía Máy chủ (Server)
@@ -25,6 +31,11 @@ python server/main_server.py
 ### 2. Phía Máy khách (Client)
 ```bash
 python client/main_client.py
+```
+
+### 3. Kiểm thử RDT trên mạng giả lập rớt gói (Packet Loss 20%)
+```bash
+python tests/test_rdt_lossy.py
 ```
 
 ## Cấu trúc dự án
@@ -87,9 +98,9 @@ python client/main_client.py
 - `client/main_client.py` là điểm khởi chạy cho phía client.
 - `server/auth` chứa xác thực người dùng và dữ liệu tài khoản mẫu.
 - `server/control` chứa bộ xử lý lệnh FTP-like, mã phản hồi và trạng thái phiên.
-- `shared` chứa các thành phần dùng chung cho checksum, cấu trúc gói tin và lõi RDT.
+- `shared` chứa các thành phần dùng chung cho checksum, cấu trúc gói tin và lõi RDT. Các tính năng bao gồm Cửa sổ trượt Go-Back-N, Fast Retransmit và SHA-256.
 - `tests` chứa kiểm thử cho checksum và hành vi truyền trên kênh RDT trong môi trường mất gói.
 
-## �👥 Phân công công việc
-- **Thành viên A (Chủ trì Kênh Dữ liệu):** Chịu trách nhiệm gói `shared/` và môi trường `tests/`.
-- **Thành viên B (Chủ trì Kênh Điều khiển):** Chịu trách nhiệm gói `server/` và `client/`.
+## 👥 Phân công công việc
+- **Nguyễn Minh Khôi (Chủ trì Kênh Dữ liệu):** Chịu trách nhiệm gói `shared/` và môi trường `tests/`. Triển khai cấu trúc gói tin Header 13 bytes, Internet Checksum 16-bit, cửa sổ trượt Go-Back-N, Fast Retransmit, mã băm SHA-256 và môi trường giả lập mạng rớt gói `LossyUDPSocket`.
+- **Nguyễn Vũ Đức Duy (Chủ trì Kênh Điều khiển):** Chịu trách nhiệm gói `server/` và `client/`. Triển khai máy chủ TCP, quản lý trạng thái phiên (Session), bộ xử lý các lệnh FTP-like, giao diện CLI và tích hợp các API truyền nhận `reliable_send`/`reliable_recv` từ `rdt_core.py`.

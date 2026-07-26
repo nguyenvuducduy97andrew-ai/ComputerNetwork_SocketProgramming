@@ -4,8 +4,9 @@ import time
 from .constants import (MAX_PAYLOAD, BUFFER_SIZE, TIMEOUT, FLAG_DATA, FLAG_ACK, FLAG_FIN, WINDOW_SIZE, DUP_ACK_THRESHOLD)
 from .packet_struct import pack_packet, unpack_packet
 from .checksum import verify_checksum
+from typing import Any, Optional
 
-def reliable_send(udp_socket: socket.socket, dest_addr: tuple, data_or_file_path):
+def reliable_send(udp_socket: Any, dest_addr: tuple, data_or_file_path):
     # API gửi file/dữ liệu tin cậy qua UDP sử dụng cơ chế Fast Retransmit (3 Duplicate ACKs) và thuật toán Sliding Window (Go-Back-N)
 
     # Đọc dữ liệu đầu vào
@@ -89,7 +90,7 @@ def reliable_send(udp_socket: socket.socket, dest_addr: tuple, data_or_file_path
         except socket.timeout:
             pass
 
-def reliable_recv(udp_socket: socket.socket, save_file_path: str = None) -> bytes:
+def reliable_recv(udp_socket: socket.socket, save_file_path: Optional[str] = None) -> bytes:
     # API nhận dữ liệu tin cậy qua UDP, đảm bảo ghép nối dữ liệu đúng thứ tự và loại bỏ gói trùng lặp và phản hồi ACK tích lũy.
 
     received_chunks = {}
@@ -139,7 +140,9 @@ def reliable_recv(udp_socket: socket.socket, save_file_path: str = None) -> byte
             full_data.extend(received_chunks[i])
 
     if save_file_path:
-        os.makedirs(os.path.dirname(save_file_path), exist_ok=True)
+        dir_name = os.path.dirname(save_file_path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
         with open(save_file_path, 'wb') as f:
             f.write(full_data)
 
