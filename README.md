@@ -15,7 +15,7 @@
 - Xử lý xác thực người dùng, điều hướng thư mục, thiết lập chế độ truyền và các lệnh FTP cơ bản như `USER`, `PASS`, `PWD`, `CWD`, `CDUP`, `TYPE`, `MODE`, `RETR`, `STOR`, `QUIT`.
 - Quản lý trạng thái truyền file, thư mục làm việc, và logic cho kênh dữ liệu UDP/RDT.
 
-### Shared (Data Plane & RDT Core - Do Thành viên A đảm nhiệm)
+### Shared (Data Plane & RDT Core)
 - **Đóng gói dữ liệu:** Cấu trúc Header nhị phân 13 bytes tuần tự hóa theo chuẩn Network Byte Order (Big-Endian).
 - **Phát hiện lỗi bit:** Thuật toán Internet Checksum 16-bit kiểm tra tính toàn vẹn cho từng gói tin UDP.
 - **Truyền tin cậy:** Cơ chế cửa sổ trượt Go-Back-N ($N=8$), kết hợp Fast Retransmit (3 Duplicate ACKs) và Timeout Retransmit ($RTO = 0.3s$).

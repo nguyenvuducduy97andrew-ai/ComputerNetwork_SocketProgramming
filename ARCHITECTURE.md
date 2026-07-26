@@ -74,7 +74,7 @@ Server cũng điều phối quá trình truyền file và theo dõi file đang �
 
 ---
 
-## Luồng điều khiển TCP (Control Plane)
+## Luồng điều khiển TCP (Control Plane — Phần do Thành viên B đảm nhiệm)
 
 TCP được dùng cho phần trao đổi điều khiển giữa client và server.
 Kênh này xử lý luồng yêu cầu và phản hồi thông thường.
@@ -154,19 +154,17 @@ Thư mục `shared/` chứa toàn bộ lõi kỹ thuật xử lý dữ liệu nh
 ```mermaid
 flowchart LR
     subgraph Control_Plane ["TCP Control Channel (Thành viên B)"]
-        Client_Ctrl[Client Control] <--->|Lệnh & Phản hồi TCP| Server_Ctrl[Server Control]
+        Client_Ctrl[Client Control] <--->|"Lệnh & Phản hồi TCP"| Server_Ctrl[Server Control]
     end
 
-    subgraph Data_Plane ["UDP Data Channel với Custom RDT (Thành viên A)"]
-        Client_Data[Client RDT Engine] <--->|Gói tin RDT UDP - 13B Header| Server_Data[Server RDT Engine]
+    subgraph Data_Plane ["UDP Data Channel với RDT"]
+        Client_Data[Client RDT Engine] <--->|"Gói tin RDT UDP<br>13B Header"| Server_Data[Server RDT Engine]
     end
 
-    Client_Ctrl -->|Kích hoạt Upload/Download| Client_Data
-    Server_Ctrl -->|Mở kênh Data Active/Passive| Server_Data
+    Client_Ctrl -->|"Kích hoạt<br>Upload/Download"| Client_Data
+    Server_Ctrl -->|"Mở kênh Data<br>Active/Passive"| Server_Data
 
-    Shared_Modules["Module Dùng Chung (Thành viên A):
-    - constants.py | packet_struct.py
-    - checksum.py  | rdt_core.py"] -.-> Client_Data
+    Shared_Modules["Module Dùng Chung (Thành viên A):<br>- constants.py | packet_struct.py<br>- checksum.py | rdt_core.py"] -.-> Client_Data
     Shared_Modules -.-> Server_Data
 ```
 
