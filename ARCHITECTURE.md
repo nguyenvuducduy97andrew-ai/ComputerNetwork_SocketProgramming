@@ -152,12 +152,14 @@ Thư mục `shared/` chứa toàn bộ lõi kỹ thuật xử lý dữ liệu nh
 ## Sơ đồ tổng quan kiến trúc hệ thống
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph Control_Plane ["TCP Control Channel (Thành viên B)"]
+        direction LR
         Client_Ctrl[Client Control] <--->|"Lệnh & Phản hồi TCP"| Server_Ctrl[Server Control]
     end
 
     subgraph Data_Plane ["UDP Data Channel với RDT"]
+        direction LR
         Client_Data[Client RDT Engine] <--->|"Gói tin RDT UDP<br>13B Header"| Server_Data[Server RDT Engine]
     end
 
