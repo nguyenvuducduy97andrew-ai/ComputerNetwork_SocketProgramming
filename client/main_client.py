@@ -6,6 +6,7 @@ import sys
 
 from client.control.client_control import ControlConnection, parse_reply
 from client.control.command_handler import handle_command
+from client.control.context import ClientContext
 
 
 def parse_command_line(
@@ -58,6 +59,8 @@ def run_client(
             "Type QUIT to exit."
         )
 
+        context = ClientContext(server_host=host)
+
         while True:
             try:
                 user_input = input("ftp> ").strip()
@@ -76,6 +79,7 @@ def run_client(
             try:
                 should_continue = handle_command(
                     control,
+                    context,
                     command,
                     args,
                 )

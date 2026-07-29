@@ -50,12 +50,17 @@ class ControlConnection:
     def send_command_and_receive_multiline_response(self, command: str) -> list[str]:
         """Send a command and read a multi-line response."""
         self.send_command(command)
-        lines = []
-        while True:
-            line = self.read_reply_line()
-            lines.append(line)
-            if len(line) < 4 or line[3] != "-":
-                break
+        first_line = self.read_reply_line()
+        lines = [first_line]
+
+        if len(first_line) < 4 or not first_line[:3].isdigit() or first_line[3] != "-":
+            return lines
+
+        terminator = f"{first_line[:3]} "
+
+        while not lines[-1].startswith(terminator):
+            lines.append(self.read_reply_line())
+
         return lines
 
 

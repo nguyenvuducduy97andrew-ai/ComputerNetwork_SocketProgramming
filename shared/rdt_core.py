@@ -4,9 +4,18 @@ import time
 from .constants import (MAX_PAYLOAD, BUFFER_SIZE, TIMEOUT, FLAG_DATA, FLAG_ACK, FLAG_FIN, WINDOW_SIZE, DUP_ACK_THRESHOLD)
 from .packet_struct import pack_packet, unpack_packet
 from .checksum import verify_checksum
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
-def reliable_send(udp_socket: Any, dest_addr: tuple, data_or_file_path):
+
+ProgressCallback = Callable[[int, int], None]
+
+
+def reliable_send(
+    udp_socket: Any,
+    dest_addr: tuple,
+    data_or_file_path,
+    progress_callback: ProgressCallback | None = None,
+):
     # API gửi file/dữ liệu tin cậy qua UDP sử dụng cơ chế Fast Retransmit (3 Duplicate ACKs) và thuật toán Sliding Window (Go-Back-N)
 
     # Đọc dữ liệu đầu vào
@@ -17,6 +26,10 @@ def reliable_send(udp_socket: Any, dest_addr: tuple, data_or_file_path):
         raw_data = data_or_file_path
     else:
         raw_data = str(data_or_file_path).encode('utf-8')
+
+    total_bytes = len(raw_data)
+    if progress_callback is not None:
+        progress_callback(0, total_bytes)
 
     # Phân đoạn dữ liệu thành danh sách các gói tin
     chunks = [raw_data[i:i + MAX_PAYLOAD] for i in range(0, len(raw_data), MAX_PAYLOAD)]
@@ -56,6 +69,15 @@ def reliable_send(udp_socket: Any, dest_addr: tuple, data_or_file_path):
                     if ack_num > base:
                         # Cumulative ACK: Cửa sổ trượt tịnh tiến về phía trước
                         base = ack_num
+                        if progress_callback is not None:
+                            acknowledged_bytes = min(
+                                base * MAX_PAYLOAD,
+                                total_bytes,
+                            )
+                            progress_callback(
+                                acknowledged_bytes,
+                                total_bytes,
+                            )
                         dup_ack_count = 0
                         if base < next_seq_num:
                             timer_start = time.time()  # Reset timer cho gói chưa ACK tiếp theo
@@ -76,6 +98,9 @@ def reliable_send(udp_socket: Any, dest_addr: tuple, data_or_file_path):
                 udp_socket.sendto(packets[i], dest_addr)
             timer_start = time.time()
 
+    if progress_callback is not None:
+        progress_callback(total_bytes, total_bytes)
+
     # Bắt tay kết thúc truyền dữ liệu (FIN Handshake)
     fin_packet = pack_packet(seq = total_packets, ack = 0, flags = FLAG_FIN)
     udp_socket.settimeout(TIMEOUT)
@@ -90,12 +115,21 @@ def reliable_send(udp_socket: Any, dest_addr: tuple, data_or_file_path):
         except socket.timeout:
             pass
 
-def reliable_recv(udp_socket: socket.socket, save_file_path: Optional[str] = None) -> bytes:
+def reliable_recv(
+    udp_socket: socket.socket,
+    save_file_path: Optional[str] = None,
+    total_bytes: int | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> bytes:
     # API nhận dữ liệu tin cậy qua UDP, đảm bảo ghép nối dữ liệu đúng thứ tự và loại bỏ gói trùng lặp và phản hồi ACK tích lũy.
 
     received_chunks = {}
     expected_seq = 0
+    received_bytes = 0
     udp_socket.settimeout(2.0)
+
+    if progress_callback is not None and total_bytes is not None:
+        progress_callback(0, total_bytes)
 
     while True:
         try:
@@ -121,6 +155,13 @@ def reliable_recv(udp_socket: socket.socket, save_file_path: Optional[str] = Non
                     # Nhận đúng gói mong đợi -> Đưa vào bộ đệm và tăng Sequence kỳ vọng
                     received_chunks[seq] = unpacked['payload']
                     expected_seq += 1
+                    received_bytes += len(unpacked['payload'])
+
+                    if progress_callback is not None and total_bytes is not None:
+                        progress_callback(
+                            min(received_bytes, total_bytes),
+                            total_bytes,
+                        )
                     
                     # Phản hồi Cumulative ACK (Xác nhận đã nhận an toàn đến expected_seq)
                     ack_packet = pack_packet(seq = 0, ack = expected_seq, flags = FLAG_ACK)
@@ -145,5 +186,8 @@ def reliable_recv(udp_socket: socket.socket, save_file_path: Optional[str] = Non
             os.makedirs(dir_name, exist_ok=True)
         with open(save_file_path, 'wb') as f:
             f.write(full_data)
+
+    if progress_callback is not None and total_bytes is not None:
+        progress_callback(total_bytes, total_bytes)
 
     return bytes(full_data)

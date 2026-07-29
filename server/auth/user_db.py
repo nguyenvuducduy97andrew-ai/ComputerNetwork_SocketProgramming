@@ -5,12 +5,11 @@ USER_FILE = Path(__file__).resolve().parent / "user.json"
 
 def load_user() -> dict:
     with USER_FILE.open("r", encoding="utf-8") as file:
+        print(f"[user_db] JSON path: {USER_FILE}")
+        print(f"[user_db] File exists: {USER_FILE.exists()}")
         return json.load(file)
 
 def user_exists(username: str) -> bool:
-    print(f"[user_db] JSON path: {USER_FILE}")
-    print(f"[user_db] File exists: {USER_FILE.exists()}")
-
     users = load_user()
 
     print(f"[user_db] Loaded users: {list(users.keys())}")

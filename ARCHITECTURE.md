@@ -1,209 +1,290 @@
-# Tổng quan kiến trúc
+# Kiến trúc Hybrid FTP
 
-## Mục đích
+## 1. Tổng quan
 
-Dự án này là một ứng dụng kiểu Hybrid FTP, được thiết kế để truyền tệp giữa client và server theo hai luồng rõ ràng:
+Hệ thống gồm ba package chính:
 
-- **TCP (Control Plane):** Dùng cho trao đổi lệnh, quản lý phiên và điều khiển trạng thái.
-- **UDP kết hợp RDT (Data Plane):** Dùng cho truyền dữ liệu tệp tin cậy với cơ chế tự phát hiện lỗi và truyền lại.
+- `client`: CLI, trạng thái phía client và logic gửi/nhận dữ liệu.
+- `server`: TCP server, xác thực, session và các command handler.
+- `shared`: định dạng packet, checksum và RDT chạy trên UDP.
 
-Mục tiêu là giữ cho kênh điều khiển đơn giản, ổn định, đồng thời xây dựng một cơ chế truyền dữ liệu tùy chỉnh (custom RDT) mạnh mẽ trên nền UDP mà không phụ thuộc vào bất kỳ thư viện bên ngoài nào.
-
----
-
-## Các phần chính
-
-### Client
-
-Client là phần dành cho người dùng của ứng dụng.
-Nó mở kết nối, nhận lệnh từ người dùng và hiển thị phản hồi từ server.
-Khi cần gửi hoặc nhận file, client cũng tham gia vào việc chuẩn bị quá trình truyền dữ liệu.
-
-#### Cấu trúc thư mục client
-
-- `client/main_client.py`: điểm khởi chạy của client. File này mở kết nối tới server, hiển thị lời chào và tiếp tục hỏi lệnh từ người dùng.
-- `client/control/client_control.py`: lớp hỗ trợ gửi lệnh đến server và đọc phản hồi theo đúng cách server trả về.
-- `client/control/command_handler.py`: bộ điều phối lệnh phía client. File này nhận lệnh từ người dùng và chuyển đến handler phù hợp.
-- `client/control/cli_monitor.py`: nơi hiển thị tiến trình và trạng thái trong lúc truyền file.
-- `client/control/handlers/common.py`: các helper dùng chung để gửi lệnh, đọc phản hồi và in kết quả mà không lặp lại logic.
-- `client/control/handlers/auth_handler.py`: xử lý các lệnh đăng nhập và thoát ở phía client.
-- `client/control/handlers/navigation_handler.py`: xử lý các lệnh điều hướng thư mục như PWD, CWD, CDUP.
-- `client/control/handlers/transfer_setup_handler.py`: xử lý các lệnh thiết lập truyền như TYPE và MODE.
-- `client/control/handlers/transfer_handler.py`: xử lý các lệnh truyền file như RETR và STOR.
-- `client/__init__.py`: đánh dấu thư mục client là một gói Python.
-
-**Cách các phần này phối hợp với nhau:**
-
-1. Người dùng khởi chạy client từ `main_client.py`.
-2. `main_client.py` gửi từng lệnh qua `client_control.py`.
-3. `client/control/command_handler.py` chuyển lệnh đến đúng file handler trong `client/control/handlers/`.
-4. `common.py` giúp các handler dùng chung cùng một cách gửi lệnh và đọc phản hồi.
-5. Khi cần hiển thị tiến trình truyền, `cli_monitor.py` hỗ trợ hiển thị.
-6. Client tiếp tục hoạt động cho đến khi người dùng rời phiên làm việc.
-
----
-
-### Server
-
-Server là phần trung tâm của ứng dụng.
-Nó nhận kết nối từ client, kiểm tra yêu cầu của người dùng, quản lý trạng thái phiên và quyết định cách xử lý từng lệnh.
-Server cũng điều phối quá trình truyền file và theo dõi file đang được upload hoặc download.
-
-#### Cấu trúc thư mục server
-
-- `server/main_server.py`: điểm khởi chạy của server. File này lắng nghe kết nối từ client, tạo một phiên riêng cho mỗi client và chuyển lệnh tới bộ xử lý lệnh.
-- `server/auth/user_db.py`: lớp kiểm tra người dùng đơn giản. Nó xác minh thông tin đăng nhập có hợp lệ hay không.
-- `server/auth/user.json`: dữ liệu mẫu của người dùng dùng cho luồng đăng nhập.
-- `server/control/command_handler.py`: bộ điều phối lệnh chính. Nó quyết định hành động nào sẽ chạy cho mỗi lệnh client gửi lên.
-- `server/control/ftp_codes.py`: danh sách phản hồi của server. File này giúp các thông báo trạng thái được thống nhất.
-- `server/control/session.py`: bộ nhớ phiên của một client đang kết nối. Nó lưu trạng thái đăng nhập, thư mục hiện tại và trạng thái truyền.
-- `server/control/handlers/auth_handler.py`: xử lý các hành động liên quan đến đăng nhập và đăng xuất.
-- `server/control/handlers/navigation_handler.py`: xử lý các hành động liên quan đến thư mục, như xem thư mục hiện tại hoặc di chuyển sang thư mục khác.
-- `server/control/handlers/transfer_setup_handler.py`: xử lý các thiết lập truyền như kiểu dữ liệu và chế độ truyền.
-- `server/control/handlers/transfer_handler.py`: xử lý các yêu cầu truyền file và chuẩn bị trạng thái truyền.
-- `server/__init__.py`: đánh dấu thư mục server là một gói Python.
-
-**Cách các phần này phối hợp với nhau:**
-
-1. Server được khởi chạy từ `main_server.py`.
-2. Một client kết nối vào, và server tạo một session bằng `session.py`.
-3. `command_handler.py` chuyển từng yêu cầu của người dùng đến đúng bộ xử lý.
-4. Các file handler đảm nhiệm phần đăng nhập, điều hướng thư mục và chuẩn bị truyền file.
-5. `ftp_codes.py` cung cấp các thông điệp phản hồi gửi về cho client.
-6. `user_db.py` kiểm tra thông tin đăng nhập với dữ liệu mẫu trong `user.json`.
-
----
-
-## Luồng điều khiển TCP (Control Plane — Đức Duy đảm nhiệm)
-
-TCP được dùng cho phần trao đổi điều khiển giữa client và server.
-Kênh này xử lý luồng yêu cầu và phản hồi thông thường.
-
-**Luồng chạy:**
-
-1. Client kết nối tới server qua cổng TCP cố định.
-2. Server gửi một thông báo chào mừng (`220 Service ready`).
-3. Client gửi thông tin đăng nhập (`USER`, `PASS`).
-4. Server chấp nhận hoặc từ chối đăng nhập (`230 Login successful` / `530 Not logged in`).
-5. Client gửi các lệnh quản lý thư mục (`PWD`, `CWD`, `LIST`) hoặc lệnh chuẩn bị truyền file (`TYPE`, `PASV`, `PORT`).
-6. Server trả lời từng lệnh bằng các mã trạng thái chuẩn RFC 959.
-
-Luồng điều khiển này được giữ ổn định trong suốt phiên làm việc cho đến khi client gửi lệnh `QUIT`.
-
----
-
-## Luồng truyền dữ liệu UDP với RDT (Data Plane — Minh Khôi đảm nhiệm)
-
-UDP được dùng cho kênh truyền dữ liệu tệp thực tế. Vì UDP nguyên bản là giao thức không tin cậy (Unreliable), dự án xây dựng một lớp giao thức RDT (Reliable Data Transfer) độc lập ở tầng ứng dụng.
-
-### Cấu trúc chi tiết gói tin RDT Custom Header (13 Bytes)
-
-Mọi gói tin truyền qua UDP đều chứa một Header 13-Byte được tuần tự hóa theo định dạng **Network Byte Order (Big-Endian)**:
-
-| Trường (Field) | Kiểu dữ liệu | Kích thước | Mô tả |
-| :--- | :--- | :--- | :--- |
-| **Sequence Number** | Unsigned Int (`I`) | 4 Bytes | Số thứ tự định danh cho từng gói tin (0, 1, 2, ...). |
-| **Acknowledgment Number** | Unsigned Int (`I`) | 4 Bytes | Số thứ tự xác nhận tích lũy (Cumulative ACK). |
-| **Checksum** | Unsigned Short (`H`) | 2 Bytes | Mã kiểm lỗi Internet Checksum 16-bit của toàn bộ gói. |
-| **Payload Length** | Unsigned Short (`H`) | 2 Bytes | Độ dài phần dữ liệu thực tế (0 đến 1024 bytes). |
-| **Flags** | Unsigned Char (`B`) | 1 Byte | Bitmask điều khiển (`SYN=1`, `ACK=2`, `FIN=4`, `DATA=8`). |
-
-### Các cơ chế kỹ thuật nổi bật của RDT Engine
-
-1. **Cửa sổ trượt Go-Back-N (Sliding Window $N = 8$):** Bên gửi có thể đẩy liên tục tối đa 8 gói tin lên đường truyền trước khi bắt buộc phải dừng lại chờ ACK, tối ưu hóa băng thông gấp nhiều lần so với cơ chế Stop-and-Wait.
-2. **Fast Retransmit (3 Duplicate ACKs):** Khi bên gửi nhận liên tiếp 3 ACK lặp lại cho cùng một gói tin, hệ thống xác định gói tin tiếp theo đã bị rớt mạng và lập tức gửi lại gói đó ngay mà không cần chờ bộ đếm thời gian Timeout (RTO) kết thúc.
-3. **Cumulative ACK & In-Order Delivery:** Bên nhận chỉ chấp nhận dữ liệu đúng thứ tự `expected_seq`. Phản hồi ACK tích lũy cho biết gói tin lớn nhất đã nhận an toàn. Các gói đến sai thứ tự hoặc hỏng bit sẽ bị loại bỏ và kích hoạt phản hồi Duplicate ACK.
-4. **Xác thực toàn vẹn End-to-End (SHA-256):** Hỗ trợ tính năng kiểm tra Hash mật mã cho toàn bộ file trước và sau khi gửi để đảm bảo độ chính xác $100\%$ ngay cả trong môi trường mạng hỏng.
-
----
-
-## Các file hỗ trợ dùng chung (Shared) và Kiểm thử (Tests) — Minh Khôi đảm nhiệm
-
-Thư mục `shared/` chứa toàn bộ lõi kỹ thuật xử lý dữ liệu nhị phân và RDT Engine, đóng vai trò làm API dịch vụ cho cả Client và Server. Thư mục `tests/` phục vụ việc kiểm thử độc lập.
-
-### 1. `shared/constants.py` (Cấu hình hệ thống & Hằng số mạng)
-- Định nghĩa kích thước khối dữ liệu `MAX_PAYLOAD = 1024` bytes (1 KB).
-- Định nghĩa cấu trúc Header nhị phân `HEADER_FORMAT = '!IIHHB'` (13 Bytes).
-- Cấu hình tham số cửa sổ trượt `WINDOW_SIZE = 8`, thời gian chờ `TIMEOUT = 0.3s`, và ngưỡng Fast Retransmit `DUP_ACK_THRESHOLD = 3`.
-- Định nghĩa các cờ bitwise điều khiển `FLAG_SYN`, `FLAG_ACK`, `FLAG_FIN`, `FLAG_DATA`.
-
-### 2. `shared/checksum.py` (Kiểm tra lỗi 16-bit & Hash File)
-- **`compute_checksum(data_bytes)`:** Thực hiện thuật toán Internet Checksum 16-bit (Cộng bù 1 tất cả các cụm 16-bit rồi lấy nghịch đảo bit).
-- **`verify_checksum(packet_bytes)`:** Tự động kiểm tra xem gói tin nhận được có bị biến đổi bit trên đường truyền hay không (kết quả cộng bù 1 toàn bộ gói tin phải bằng 0).
-- **`compute_file_hash(file_path)`:** Đọc file theo từng khối 4KB để tính mã băm SHA-256 tích lũy, phục vụ xác thực toàn vẹn cho lệnh `HASH`.
-
-### 3. `shared/packet_struct.py` (Đóng gói & Rã gói nhị phân)
-- **`pack_packet(seq, ack, flags, data)`:** Sử dụng cơ chế đóng gói 2 bước (Two-pass packing): Tạo header tạm tính checksum $\rightarrow$ Nhét checksum thực vào header $\rightarrow$ Nối dữ liệu để tạo mảng byte thô gửi qua Socket.
-- **`unpack_packet(packet_bytes)`:** Băm tách mảng byte nhận từ socket thành các thuộc tính Header (`seq`, `ack`, `checksum`, `length`, `flags`) và `payload`.
-
-### 4. `shared/rdt_core.py` (Bộ não RDT Engine & API Truyền dữ liệu)
-- **`reliable_send(udp_socket, dest_addr, data_or_file_path)`:** API gửi dữ liệu/file tin cậy cho Thành viên B gọi. Quản lý cửa sổ trượt Go-Back-N, đếm giờ Timer, xử lý 3 Duplicate ACKs (Fast Retransmit) và bắt tay kết thúc truyền `FIN`.
-- **`reliable_recv(udp_socket, save_file_path)`:** API nhận dữ liệu/file tin cậy cho Thành viên B gọi. Lắng nghe UDP socket, lọc gói hỏng/lặp, sắp xếp dữ liệu đúng thứ tự, phản hồi Cumulative ACK và ghi file ra đĩa cứng.
-
-### 5. `tests/test_checksum.py` (Unit Test Đóng gói & Checksum)
-- Kiểm thử độc lập khả năng đóng gói nhị phân, rã gói và phát hiện nhiễu bit khi giả lập đổi bit ngẫu nhiên trong gói tin.
-
-### 6. `tests/test_rdt_lossy.py` (Kịch bản mô phỏng truyền file trên mạng lỗi)
-- Định nghĩa lớp `LossyUDPSocket` để cố tình làm mất $20\%$ số gói tin ngẫu nhiên trên đường truyền.
-- Chạy thử nghiệm gửi/nhận một file 100KB qua kênh mạng lỗi $20\%$, tự động đối chiếu mã băm SHA-256 giữa bên gửi và bên nhận để chứng minh tính chịu lỗi tuyệt đối của RDT Engine.
-
----
-
-## Sơ đồ tổng quan kiến trúc hệ thống
+Cả hai chỉ phụ thuộc vào `shared` cho data plane.
 
 ```mermaid
-flowchart TB
-    subgraph Control_Plane ["TCP Control Channel (Thành viên B)"]
-        direction LR
-        Client_Ctrl[Client Control] <--->|"Lệnh & Phản hồi TCP"| Server_Ctrl[Server Control]
-    end
-
-    subgraph Data_Plane ["UDP Data Channel với RDT"]
-        direction LR
-        Client_Data[Client RDT Engine] <--->|"Gói tin RDT UDP<br>13B Header"| Server_Data[Server RDT Engine]
-    end
-
-    Client_Ctrl -->|"Kích hoạt<br>Upload/Download"| Client_Data
-    Server_Ctrl -->|"Mở kênh Data<br>Active/Passive"| Server_Data
-
-    Shared_Modules["Module Dùng Chung (Thành viên A):<br>- constants.py | packet_struct.py<br>- checksum.py | rdt_core.py"] -.-> Client_Data
-    Shared_Modules -.-> Server_Data
+flowchart LR
+    CLI[Client CLI] --> CD[Client command dispatcher]
+    CD <-->|Lệnh và reply CRLF qua TCP| SD[Server command dispatcher]
+    SD --> SH[Server handlers]
+    CD --> CH[Client handlers]
+    CH --> CDS[Client data service]
+    SH --> SDS[Server data service]
+    CDS <-->|Packet UDP/RDT| SDS
+    RDT[shared: packet, checksum, RDT] -.-> CDS
+    RDT -.-> SDS
 ```
 
-Sơ đồ trên minh họa sự tách biệt giữa hai kênh giao tiếp trong hệ thống:
+## 2. Control plane qua TCP
 
-- **Kênh điều khiển (TCP Control Plane):** Đảm nhận việc trao đổi lệnh và phản hồi giữa Client và Server, đồng thời chịu trách nhiệm khởi tạo và thống nhất cổng truyền dữ liệu (chế độ Active hoặc Passive).
-- **Kênh dữ liệu (UDP Data Plane):** Thực hiện việc truyền file thực tế qua giao thức RDT tùy chỉnh, sử dụng các gói tin UDP chứa Header 13 bytes và được hỗ trợ trực tiếp bởi các module dùng chung trong thư mục `shared/`.
+### 2.1 Phía client
 
-## Các file hỗ trợ dùng chung
+`client/main_client.py`:
 
-Thư mục `shared/` chứa các module dùng chung cho cả client và server, đảm bảo tính nhất quán về cấu trúc gói tin, kiểm tra lỗi và cơ chế truyền file.
+1. Mở một TCP connection đến server.
+2. Nhận greeting `220`.
+3. Đọc lệnh từ CLI.
+4. Tách command và argument.
+5. Chuyển lệnh cho `client/control/command_handler.py`.
 
-- `shared/constants.py`: Lưu các hằng số mạng và tham số cấu hình như `MAX_PAYLOAD` (1024 bytes), `WINDOW_SIZE` (8), `TIMEOUT` (0.3s), `DUP_ACK_THRESHOLD` (3) và các cờ điều khiển (`FLAG_SYN`, `FLAG_ACK`, `FLAG_FIN`, `FLAG_DATA`).
-- `shared/checksum.py`: Cung cấp hàm tính Internet Checksum 16-bit để phát hiện lỗi bit trên từng gói tin UDP và hàm tính mã băm SHA-256 để kiểm tra toàn vẹn file.
-- `shared/packet_struct.py`: Chứa các hàm đóng gói (`pack_packet`) và rã gói (`unpack_packet`) nhị phân theo cấu trúc Header 13 bytes (Network Byte Order - Big-Endian).
-- `shared/rdt_core.py`: Cung cấp hai API chính cho việc truyền nhận dữ liệu tin cậy là `reliable_send()` (quản lý cửa sổ trượt, timer, Fast Retransmit) và `reliable_recv()` (sắp xếp gói tin, gửi Cumulative ACK và ghi file).
+`ControlConnection` trong `client/control/client_control.py` sở hữu TCP socket và một buffer bền vững:
 
-Các module này xử lý toàn bộ logic truyền tải dữ liệu bên dưới, giúp phần mã nguồn của client và server chỉ cần gọi hàm mà không phải viết lại cơ chế RDT.
+- `send_command()` thêm `\r\n`.
+- `read_reply_line()` trả đúng một dòng và giữ byte dư cho lần đọc kế tiếp.
+- `send_simple_command()` dùng cho lệnh chỉ có một reply.
+- `send_command_and_receive_multiline_response()` đọc từ `ddd-...` đến dòng kết thúc `ddd ...`.
 
-## Luồng tổng thể của một phiên làm việc
+Các handler phía client chịu trách nhiệm:
 
-1. **Khởi tạo:** Client mở kết nối TCP đến Server, thực hiện luồng đăng nhập qua `auth_handler`.
-2. **Thiết lập kênh truyền:** Client gửi lệnh `PASV` (Passive Mode) hoặc `PORT` (Active Mode) qua TCP để hai bên thống nhất cổng UDP truyền dữ liệu.
-3. **Yêu cầu truyền file:** Client gửi lệnh `RETR <filename>` (Download) hoặc `STOR <filename>` (Upload) qua TCP.
-4. **Truyền dữ liệu tin cậy qua UDP (RDT):**
-   - Phía gửi gọi `reliable_send()`, chia file thành các khối 1024 bytes, đóng gói Header 13 Bytes và đẩy qua cửa sổ trượt Go-Back-N ($N=8$).
-   - Phía nhận gọi `reliable_recv()`, kiểm tra lỗi bit qua Internet Checksum, phản hồi Cumulative ACK, loại bỏ gói lặp và ghi file.
-   - Nếu mạng rớt gói, cơ chế **Fast Retransmit (3 Dup ACKs)** hoặc **Timeout Retransmit** sẽ tự động phục hồi dữ liệu bị mất.
-5. **Xác thực toàn vẹn (SHA-256):** Sau khi kết thúc truyền, client gửi lệnh `HASH <filename>` qua TCP. Server dùng `compute_file_hash()` tính mã SHA-256 của file và trả về cho Client đối chiếu.
-6. **Kết thúc:** Phiên làm việc kết thúc khi người dùng chọn lệnh `QUIT`.
+- kiểm tra argument cục bộ;
+- gửi lệnh;
+- đọc đúng số reply;
+- cập nhật `ClientContext` chỉ khi server chấp nhận;
+- khởi chạy RDT cho lệnh có data channel;
+- hiển thị tiến trình upload/download qua `cli_monitor.py`.
 
----
+### 2.2 Phía server
 
-## Vì sao thiết kế như vậy
+`server/main_server.py` mở TCP listening socket tại cổng `2121`. Mỗi connection được xử lý bởi một daemon thread và có một `ClientSession` riêng.
 
-- **Tách biệt rõ ràng giữa Control Plane và Data Plane:** Giúp kênh lệnh TCP luôn thông suốt, không bị treo hay gián đoạn khi đang truyền file dung lượng lớn qua UDP.
-- **Tự đóng gói RDT từ đầu (Zero-library requirement):** Việc tự triển khai các trường Sequence Number, Cumulative ACK, Internet Checksum 16-bit và Sliding Window Go-Back-N trên nền UDP thuần giúp đảm bảo tính toàn vẹn và hiệu quả khi truyền file.
-- **Đóng gói dưới dạng API mô-đun hóa:** Các hàm `reliable_send` và `reliable_recv` được đóng gói hoàn chỉnh, giúp dễ dàng gọi và tích hợp vào xử lý logic của Server/Client mà không cần quan tâm đến sự phức tạp bên dưới của giao thức mạng.
+Luồng xử lý một dòng lệnh:
 
+```text
+TCP receive buffer
+  → tách theo CRLF
+  → command_handler.handle_command()
+  → command handler cụ thể
+  → iter_command_replies()
+  → sendall() từng reply
+```
 
+`server/control/command_handler.py`:
+
+- cho phép `USER`, `PASS`, `QUIT`, `NOOP`, `HELP` trước xác thực;
+- trả `530` cho các lệnh còn lại nếu chưa đăng nhập;
+- dispatch sang handler theo nhóm chức năng;
+- trả `502` cho command không được hỗ trợ;
+- che argument của `PASS` khi ghi log.
+
+### 2.3 Reply một dòng, nhiều dòng và nhiều giai đoạn
+
+`server/control/ftp_codes.py` định nghĩa mã reply và định dạng `ddd message\r\n`.
+
+Hai khái niệm khác nhau cần được giữ riêng:
+
+1. **FTP multiline reply:** một reply logic có nhiều dòng, ví dụ `HELP`.
+
+   ```text
+   214-Available commands
+   ...
+   214 End
+   ```
+
+2. **Multi-stage replies:** một command phát nhiều reply ở các thời điểm khác nhau, ví dụ truyền file.
+
+   ```text
+   150 File stable; preparing to open data connection.
+   ...truyền UDP/RDT...
+   226 Closing data connection. Transfer complete.
+   ```
+
+`server/control/command_result.py` hỗ trợ trường hợp thứ hai:
+
+- `CommandReply`: một reply có code, message và cờ `close_control`.
+- `CommandReplies`: iterator các `CommandReply`.
+- `CommandHandlerResult`: chuỗi reply cũ hoặc iterator nhiều reply.
+- `iter_command_replies()`: chuẩn hóa hai dạng để vòng lặp server gửi thống nhất.
+
+`QUIT` dùng `close_control=True`. `LIST`, `RETR`, `STOR`, `STOU` và `APPE` dùng generator để phát reply trước và sau data transfer.
+
+## 3. Trạng thái phiên
+
+### 3.1 `ClientContext`
+
+`client/control/context.py` giữ trạng thái cục bộ:
+
+| Trường | Ý nghĩa |
+|---|---|
+| `server_host` | Host dùng để tạo địa chỉ peer trong passive mode |
+| `username`, `authenticated` | Trạng thái xác thực mà client đã nhận từ reply server |
+| `transfer_type` | `A` hoặc `I`, mặc định `I` |
+| `transfer_mode` | `S`, `B` hoặc `C`, mặc định `S` |
+| `data_connection_mode` | `ACTIVE`, `PASSIVE` hoặc `None` |
+| `data_socket` | UDP socket do client sở hữu |
+| `data_peer_address` | Địa chỉ UDP server trong passive mode |
+
+`ensure_data_socket()` tạo và bind UDP socket khi cần. `reset_data_connection()` đóng socket và xóa toàn bộ trạng thái data channel.
+
+### 3.2 `ClientSession`
+
+`server/control/session.py` giữ trạng thái độc lập cho từng TCP client:
+
+| Nhóm | Trường chính |
+|---|---|
+| Kết nối | `client_address`, `connected_at`, `last_activity_at` |
+| Filesystem | `server_root`, `current_directory` |
+| Xác thực | `username`, `authenticated` |
+| Cấu hình truyền | `transfer_type`, `transfer_mode`, `data_connection_mode` |
+| Active UDP | `active_udp_address` |
+| Passive UDP | `passive_udp_socket`, `passive_client_address` |
+| Rename | `pending_rename_path` |
+| Transfer | command, file, direction, kích thước, số byte và `cancel_event` |
+
+Session có helper để:
+
+- biểu diễn và resolve current directory;
+- reset data connection và đóng passive socket;
+- bắt đầu/kết thúc transfer;
+- đánh dấu abort;
+- reset trạng thái `RNFR`/`RNTO`;
+- logout.
+
+Các handler filesystem resolve đường dẫn rồi kiểm tra đường dẫn vẫn nằm dưới `server_root`, nhằm ngăn path traversal ra ngoài vùng dữ liệu server.
+
+## 4. Data plane qua UDP/RDT
+
+### 4.1 Active mode
+
+1. Client tạo và bind UDP socket.
+2. Client gửi `PORT <port>` qua TCP.
+3. Server lưu `(client_ip, port)` trong `active_udp_address`.
+4. Với download hoặc `LIST`, server tạo UDP socket tạm và gửi đến địa chỉ client.
+
+Active-mode upload hiện không được hỗ trợ.
+
+### 4.2 Passive mode
+
+1. Client gửi `PASV`.
+2. Server tạo UDP socket, bind cổng tự do và lưu socket vào session.
+3. Server trả `227 ... UDP_PORT=<port>`.
+4. Client giữ UDP socket của nó và lưu `(server_host, port)` vào `data_peer_address`.
+5. Khi server cần gửi, client gửi một packet probe `SYN` để server khám phá địa chỉ UDP thực của client.
+6. Upload dùng chính passive socket phía server để nhận dữ liệu.
+
+Chọn lại `PORT` hoặc `PASV` gọi reset trước, nhờ đó socket và địa chỉ của mode cũ không bị tái sử dụng.
+
+### 4.3 Data-transfer service
+
+`client/control/data_transfer_service.py` xử lý dữ liệu trước upload và sau download.
+
+`server/control/data_transfer_service.py`:
+
+- kiểm tra data channel theo hướng `SEND`/`RECEIVE`;
+- resolve socket và peer address cho active/passive;
+- gọi `reliable_send()` hoặc `reliable_recv()`;
+- áp dụng TYPE/MODE;
+- hỗ trợ ghi đè hoặc append file.
+
+Ý nghĩa cấu hình hiện tại:
+
+| Thiết lập | Xử lý |
+|---|---|
+| `TYPE I` | Giữ nguyên bytes |
+| `TYPE A` | Chuyển newline của văn bản UTF-8 |
+| `MODE S` | Giữ nguyên payload |
+| `MODE B` | Hiện giữ nguyên payload như mode S |
+| `MODE C` | Nén bằng `zlib` khi gửi, giải nén khi nhận |
+
+### 4.4 Flow truyền
+
+Download (`RETR`) hoặc `LIST`:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+    C->>S: RETR file / LIST (TCP)
+    S-->>C: 150 ... BYTES=n (TCP)
+    opt Passive mode
+        C->>S: UDP SYN probe
+    end
+    S->>C: UDP/RDT data
+    S-->>C: 226 Transfer complete (TCP)
+```
+
+Upload (`STOR`, `STOU`, `APPE`):
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+    C->>S: STOR/STOU/APPE (TCP)
+    S-->>C: 150 Ready (TCP)
+    C->>S: UDP/RDT data
+    S-->>C: 226 Transfer complete (TCP)
+```
+
+`STOR` ghi đè file, `STOU` tạo tên duy nhất phía server, còn `APPE` nối dữ liệu vào cuối file hoặc tạo file nếu chưa tồn tại.
+
+`LIST` truyền listing có metadata qua data channel. `NLST` và `STAT` hiện trả thông tin trên control channel.
+
+## 5. RDT dùng chung
+
+### 5.1 Packet
+
+`shared/constants.py` khai báo header `!IIHHB`, tổng cộng 13 byte:
+
+| Field | Kích thước |
+|---|---:|
+| Sequence number | 4 byte |
+| Acknowledgment number | 4 byte |
+| Checksum | 2 byte |
+| Payload length | 2 byte |
+| Flags | 1 byte |
+
+Payload tối đa là 1024 byte. Các flag gồm `SYN`, `ACK`, `FIN` và `DATA`.
+
+### 5.2 Độ tin cậy
+
+`shared/rdt_core.py` triển khai:
+
+- Go-Back-N với cửa sổ 8 packet;
+- cumulative ACK;
+- retransmission timeout 0,3 giây;
+- fast retransmit sau 3 duplicate ACK;
+- Internet checksum 16-bit cho packet;
+- FIN handshake để kết thúc;
+- callback `(transferred_bytes, total_bytes)` cho progress monitor.
+
+`reliable_send()` nhận bytes hoặc đường dẫn file và gửi đến một UDP peer. `reliable_recv()` ráp payload đúng thứ tự, có thể trả bytes hoặc ghi ra file.
+
+`shared/checksum.py` cũng cung cấp SHA-256 dùng bởi lệnh `HASH`.
+
+## 6. Phân chia command handler
+
+Client và server cùng chia handler theo chức năng:
+
+| Module | Lệnh |
+|---|---|
+| auth | `USER`, `PASS`, `QUIT` |
+| common | `NOOP`, `HELP` |
+| navigation | `PWD`, `CWD`, `CDUP`, `MKD`, `RMD`, `LIST`, `NLST`, `STAT`, `SIZE`, `MDTM` |
+| transfer setup | `TYPE`, `MODE`, `PORT`, `PASV` |
+| transfer | `RETR`, `STOR`, `STOU`, `APPE`, `ABOR` |
+| file | `DELE`, `RNFR`, `RNTO`, `HASH` |
+
+Server là nguồn quyết định cuối cùng về xác thực, filesystem và tính hợp lệ của command. Kiểm tra phía client chỉ giúp phản hồi nhanh và không thay thế validation phía server.
+
+## 7. Dữ liệu và kiểm thử
+
+- `server/auth/user.json`: dữ liệu tài khoản.
+- `data/`: server root thực tế trong `main_server.py`.
+- `data/client_downloads/`: file client tải về và vị trí upload dự phòng.
+- `data/server_storage/`: thư mục dữ liệu có trong repository nhưng chưa được cấu hình làm server root riêng.
+- `tests/test_checksum.py`: checksum và packet.
+- `tests/test_rdt_lossy.py`: truyền RDT qua socket giả lập mất gói.
+
+Các test hiện được viết dưới dạng script dùng `assert`:
+
+```bash
+python tests/test_checksum.py
+python tests/test_rdt_lossy.py
+```

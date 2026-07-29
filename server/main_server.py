@@ -2,6 +2,7 @@ import socket
 import threading
 from pathlib import Path
 
+from server.control.command_result import iter_command_replies
 from server.control.ftp_codes import FTPReplyCode
 from server.control.command_handler import handle_command
 from server.control.session import ClientSession
@@ -36,23 +37,27 @@ def handle_client(conn: socket.socket, addr: tuple[str, int], server_root: Path)
                     args = parts[1] if len(parts) > 1 else None
 
                     if args:
-                        print(f"[{addr[0]}:{addr[1]}] Received command: {command} {args}")
+                        logged_args = "********" if command == "PASS" else args
+                        print(f"[{addr[0]}:{addr[1]}] Received command: {command} {logged_args}")
                     else:
                         print(f"[{addr[0]}:{addr[1]}] Received command: {command}")
 
-                    response = handle_command(session, command, args)
+                    result = handle_command(session, command, args)
 
-                    print(f"[{addr[0]}:{addr[1]}] Sent response: {response.strip()}")
+                    for response, close_control in iter_command_replies(result):
+                        try:
+                            conn.sendall(response.encode("utf-8"))
+                            reply_code = response.split(" ", 1)[0]
+                            print(
+                                f"[{addr[0]}:{addr[1]}] "
+                                f"Sent reply {reply_code}."
+                            )
+                        except OSError as exc:
+                            print(f"[{addr[0]}:{addr[1]}] Error sending response: {exc}")
+                            return
 
-                    try:
-                        conn.sendall(response.encode())
-                        print(f"[{addr[0]}:{addr[1]}] Response sent successfully.")
-                    except OSError as exc:
-                        print(f"[{addr[0]}:{addr[1]}] Error sending response: {exc}")
-                        break
-
-                    if command == 'QUIT':
-                        return
+                        if close_control:
+                            return
 
         except Exception as exc:
             # On unexpected error, try to close connection gracefully
@@ -65,13 +70,14 @@ def handle_client(conn: socket.socket, addr: tuple[str, int], server_root: Path)
 
 def run_server(host: str = '0.0.0.0', port: int = 2121) -> None:
     server_root = Path("data").resolve()
+    server_root.mkdir(parents=True, exist_ok=True)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         print(f"Starting Hybrid FTP Server on {host}:{port}...")
         srv.bind((host, port))
         print(f"Server root directory: {server_root.resolve()}")
         srv.listen(5)
-        print(f'Server FTP listening on {host}:{port}...')
+        print("Press Ctrl+C to stop the server.")
 
         try:
             while True:
@@ -80,7 +86,7 @@ def run_server(host: str = '0.0.0.0', port: int = 2121) -> None:
                 thread = threading.Thread(target=handle_client, args=(conn, addr, server_root), daemon=True)
                 thread.start()
                 print(f"Started thread {thread.name} for {addr[0]}:{addr[1]}")
-        except KeyboardInterrupt:
+        except KeyboardInterrupt: #Shutdown server on Ctrl+C
             print("Shutting down server...")
 
 

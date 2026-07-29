@@ -2,46 +2,39 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from socket import socket
-from threading import Event
+from threading import Event, Thread
+from datetime import datetime
 
 @dataclass
 class ClientSession: 
     client_address: tuple[str, int]
-    server_root: Path #Thư mục gốc mà server cho client truy cập. Tức là thư mục lớn nhất client truy cập được
+    server_root: Path 
     username: str | None = None
     authenticated: bool = False
-    current_directory: Path = Path(".") #Đang ở chỗ nào trong server_root?
+    current_directory: Path = Path(".") 
 
-    transfer_type: str = "I" 
-    #A cho ASCII, I cho binary -> Quyết định loại file truyền
-    transfer_mode: str = "S" 
-    # MODE S = Stream -> truyền liên tù tì 
-    # MODE B = Block -> Block có tên, cho biết dài cỡ nào. Chưa implement, mặc định là S
-    # MODE C = Compressed -> nén, giải nén như nào. Chưa implement, mặc định S
-    # -> File truyền được tổ chức như nào để truyền: truyền liên tục thành dòng (stream), 
+    transfer_type: str = "I" #A hoặc I (ASCII hoặc Binary)
+    transfer_mode: str = "S" # "S" (Stream), "B" (Block), "C" (Compressed)
+    data_connection_mode: str | None = None # "ACTIVE" hoặc "PASSIVE"
+
+    current_transfer_command: str | None = None
+
     
+    active_udp_address: tuple[str, int] | None = None 
 
-    # ACTIVE hoặc PASSIVE
-    # None nghĩa là Client chưa chọn PORT hay PASV
-    data_connection_mode: str | None = None
+    passive_udp_socket: socket | None = None 
+    passive_client_address: tuple[str, int] | None = None
 
-    # Client gửi lệnh PORT để báo:
-    # "Hãy gửi UDP tới IP/port này"
-    active_data_address: tuple[str, int] | None = None 
-
-    passive_udp_socket: socket | None = None
-    passive_udp_port: int | None = None #cổng udp mở trong passive mode
-    # Lệnh rename dùng 2 bước:
-    # RNFR old.txt rename from
-    # RNTO new.txt rename to
-    # Sau RNFR, Server phải nhớ old.txt ở đây
-    pending_rename_path: Path | None = None
+    pending_rename_path: Path | None = None 
 
     transfer_in_progress: bool = False 
     current_transfer_file: Path | None = None
     current_transfer_direction: str | None = None # "UPLOAD" hoặc "DOWNLOAD"
     expected_transfer_size: int = 0 #in byte
     transferred_bytes: int = 0
+
+    connected_at: datetime = field(default_factory=datetime.now)
+    last_activity_at: datetime = field(default_factory=datetime.now)
 
     # Event dùng để báo hủy truyền khi Client gửi ABOR
     cancel_event: Event = field(default_factory=Event)
@@ -57,10 +50,6 @@ class ClientSession:
         return "/" + self.current_directory.as_posix()
     
     def reset_data_connection(self) -> None:
-        """
-        Đóng và xóa thông tin data channel hiện tại.
-        """
-        print(f"[ClientSession] Resetting data connection.")
         if self.passive_udp_socket is not None:
             try:
                 self.passive_udp_socket.close()
@@ -68,16 +57,17 @@ class ClientSession:
                 pass
 
         self.data_connection_mode = None
-        self.active_data_address = None
+        self.active_udp_address = None
         self.passive_udp_socket = None
-        self.passive_udp_port = None
+        self.passive_client_address = None
 
-    def start_transfer(self, file_path: Path, direction: str, expected_size: int = 0) -> None:
+    def start_transfer(self, command: str, file_path: Path, direction: str, expected_size: int = 0) -> None:
         """
         Đánh dấu session đang bắt đầu truyền file.
         """
         print(f"[ClientSession] Starting transfer. File: {file_path}, Direction: {direction}, Expected size: {expected_size} bytes")
         self.transfer_in_progress = True
+        self.current_transfer_command = command.upper()
         self.current_transfer_file = file_path
         self.current_transfer_direction = direction
         self.expected_transfer_size = expected_size
@@ -90,6 +80,7 @@ class ClientSession:
         """
         print(f"[ClientSession] Finishing transfer. File: {self.current_transfer_file}, Direction: {self.current_transfer_direction}")
         self.transfer_in_progress = False
+        self.current_transfer_command = None
         self.current_transfer_file = None
         self.current_transfer_direction = None
         self.expected_transfer_size = 0
@@ -110,6 +101,9 @@ class ClientSession:
         """
         print(f"[ClientSession] Resetting rename state.")
         self.pending_rename_path = None
+
+    def record_activity(self) -> None:
+        self.last_activity_at = datetime.now()
 
     def logout(self) -> None:
         """

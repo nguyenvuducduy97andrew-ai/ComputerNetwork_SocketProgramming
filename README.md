@@ -1,106 +1,147 @@
-# Đồ Án Hybrid FTP Application
+# Hybrid FTP Client–Server
 
-Ứng dụng truyền tải tệp tin theo mô hình Hybrid FTP, trong đó kênh điều khiển dùng TCP để xử lý đăng nhập và lệnh FTP-like, còn kênh dữ liệu dùng UDP kết hợp cơ chế RDT (Reliable Data Transfer) tự phát triển để truyền tệp tin ổn định hơn trong môi trường mạng không tin cậy.
+Ứng dụng truyền tệp theo mô hình Client–Server, tách thành hai kênh:
 
-## Vai trò của từng thành phần
+- **Control channel (TCP):** duy trì phiên, gửi lệnh FTP-like và nhận reply.
+- **Data channel (UDP + RDT):** truyền listing và nội dung tệp bằng cơ chế Reliable Data Transfer tự cài đặt.
 
-### Client
-- Là điểm khởi chạy phía người dùng để kết nối tới server và gửi các lệnh điều khiển.
-- Cung cấp lớp điều khiển CLI để tương tác với server và hiển thị trạng thái truyền nhận.
-- Tổ chức logic lệnh phía client theo `client/control/command_handler.py` và các handler trong `client/control/handlers/`.
-- Hỗ trợ các phần dùng chung để kiểm tra checksum, cấu trúc gói tin và theo dõi tiến trình truyền file.
+Client và server là hai package độc lập. Hai phía chỉ dùng chung các thành phần giao thức dữ liệu trong `shared/`.
 
-### Server
-- Lắng nghe kết nối TCP và quản lý từng phiên làm việc của client.
-- Xử lý xác thực người dùng, điều hướng thư mục, thiết lập chế độ truyền và các lệnh FTP cơ bản như `USER`, `PASS`, `PWD`, `CWD`, `CDUP`, `TYPE`, `MODE`, `RETR`, `STOR`, `QUIT`.
-- Quản lý trạng thái truyền file, thư mục làm việc, và logic cho kênh dữ liệu UDP/RDT.
+## Yêu cầu
 
-### Shared (Data Plane & RDT Core)
-- **Đóng gói dữ liệu:** Cấu trúc Header nhị phân 13 bytes tuần tự hóa theo chuẩn Network Byte Order (Big-Endian).
-- **Phát hiện lỗi bit:** Thuật toán Internet Checksum 16-bit kiểm tra tính toàn vẹn cho từng gói tin UDP.
-- **Truyền tin cậy:** Cơ chế cửa sổ trượt Go-Back-N ($N=8$), kết hợp Fast Retransmit (3 Duplicate ACKs) và Timeout Retransmit ($RTO = 0.3s$).
-- **Xác thực End-to-End:** Mã băm SHA-256 đối chiếu toàn vẹn dữ liệu file trước và sau khi truyền.
+- Python 3.10 trở lên.
+- Không cần cài thư viện ngoài Python standard library.
+- Chạy các lệnh từ thư mục gốc của repository.
 
-## 🚀 Hướng dẫn khởi chạy nhanh
+## Khởi chạy
 
-### 1. Phía Máy chủ (Server)
+Mở hai terminal riêng.
+
+Server:
+
 ```bash
-python server/main_server.py
+python -m server.main_server
 ```
 
-### 2. Phía Máy khách (Client)
+Server mặc định lắng nghe TCP tại `0.0.0.0:2121` và dùng thư mục `data/` làm server root.
+
+Client:
+
 ```bash
-python client/main_client.py
+python -m client.main_client --host localhost --port 2121
 ```
 
-### 3. Kiểm thử RDT trên mạng giả lập rớt gói (Packet Loss 20%)
-```bash
-python tests/test_rdt_lossy.py
+Client lưu file tải về tại `data/client_downloads/`. Khi upload, client ưu tiên đường dẫn được nhập trực tiếp; nếu không tìm thấy, nó tìm trong `data/client_downloads/`.
+
+Tài khoản được đọc từ `server/auth/user.json`.
+
+## Các lệnh được hỗ trợ
+
+| Nhóm | Lệnh |
+|---|---|
+| Xác thực và phiên | `USER`, `PASS`, `QUIT`, `NOOP`, `HELP` |
+| Thư mục | `PWD`, `CWD`, `CDUP`, `MKD`, `RMD` |
+| Listing và metadata | `LIST`, `NLST`, `STAT`, `SIZE`, `MDTM` |
+| Thiết lập truyền | `TYPE`, `MODE`, `PORT`, `PASV` |
+| Truyền dữ liệu | `RETR`, `STOR`, `STOU`, `APPE`, `ABOR` |
+| Quản lý tệp | `DELE`, `RNFR`, `RNTO`, `HASH` |
+
+`USER`, `PASS`, `QUIT`, `NOOP` và `HELP` được phép trước khi đăng nhập. Các lệnh còn lại yêu cầu phiên đã xác thực.
+
+### Thiết lập data channel
+
+- `TYPE I`: truyền nhị phân, là giá trị mặc định.
+- `TYPE A`: chuẩn hóa newline của văn bản UTF-8.
+- `MODE S` và `MODE B`: hiện cùng truyền payload không nén.
+- `MODE C`: nén/giải nén payload bằng `zlib`.
+- `PORT <port>`: chọn active UDP và cung cấp cổng UDP của client.
+- `PASV`: server mở một UDP socket và trả `UDP_PORT=<port>`.
+
+Giới hạn hiện tại:
+
+- Download (`RETR`) và `LIST` hỗ trợ active hoặc passive mode.
+- Upload (`STOR`, `STOU`, `APPE`) hiện chỉ hỗ trợ passive mode.
+- Data channel là UDP/RDT, vì vậy cú pháp `PORT` và reply `PASV` là biến thể của dự án, không phải cú pháp địa chỉ sáu số của FTP chuẩn.
+
+Ví dụ một phiên:
+
+```text
+USER alice
+PASS secret
+TYPE I
+MODE S
+PASV
+LIST
+RETR example.bin
+QUIT
 ```
+
+Mỗi lệnh truyền dữ liệu trả reply sơ bộ `125`/`150`, thực hiện truyền qua UDP/RDT, rồi trả reply hoàn tất `226` hoặc reply lỗi. `HELP` sử dụng FTP multiline reply (`214-...` đến `214 End`).
 
 ## Cấu trúc dự án
 
-- README.md
-- client/
-  - __init__.py
-  - main_client.py
-  - control/
-    - __init__.py
-    - client_control.py
-    - command_handler.py
-    - cli_monitor.py
-    - handlers/
-      - __init__.py
-      - common.py
-      - auth_handler.py
-      - navigation_handler.py
-      - transfer_setup_handler.py
-      - transfer_handler.py
-- server/
-  - __init__.py
-  - main_server.py
-  - auth/
-    - __init__.py
-    - user_db.py
-    - user.json
-  - control/
-    - __init__.py
-    - command_handler.py
-    - ftp_codes.py
-    - session.py
-    - handlers/
-      - __init__.py
-      - auth_handler.py
-      - navigation_handler.py
-      - transfer_setup_handler.py
-      - transfer_handler.py
-- shared/
-  - __init__.py
-  - checksum.py
-  - constants.py
-  - packet_struct.py
-  - rdt_core.py
-- data/
-  - client_downloads/
-  - server_storage/
-- tests/
-  - test_checksum.py
-  - test_rdt_lossy.py
-- docs/
-  - genai_audit_log.md
-- report/
-  - diagrams/
+```text
+.
+├── README.md
+├── ARCHITECTURE.md
+├── client/
+│   ├── main_client.py
+│   └── control/
+│       ├── client_control.py
+│       ├── command_handler.py
+│       ├── context.py
+│       ├── data_transfer_service.py
+│       ├── cli_monitor.py
+│       └── handlers/
+│           ├── auth_handler.py
+│           ├── common.py
+│           ├── navigation_handler.py
+│           ├── transfer_setup_handler.py
+│           ├── transfer_handler.py
+│           └── file_handler.py
+├── server/
+│   ├── main_server.py
+│   ├── auth/
+│   │   ├── user_db.py
+│   │   └── user.json
+│   └── control/
+│       ├── command_handler.py
+│       ├── command_result.py
+│       ├── data_transfer_service.py
+│       ├── ftp_codes.py
+│       ├── session.py
+│       └── handlers/
+│           ├── auth_handler.py
+│           ├── common_handler.py
+│           ├── navigation_handler.py
+│           ├── transfer_setup_handler.py
+│           ├── transfer_handler.py
+│           └── file_handler.py
+├── shared/
+│   ├── checksum.py
+│   ├── constants.py
+│   ├── packet_struct.py
+│   └── rdt_core.py
+├── data/
+│   ├── client_downloads/
+│   └── server_storage/
+├── tests/
+│   ├── test_checksum.py
+│   └── test_rdt_lossy.py
+├── docs/
+└── report/
+```
 
-## 🧭 Trạng thái hiện tại
+Lưu ý: mặc dù repository có `data/server_storage/`, implementation hiện tại đặt `ClientSession.server_root` tại toàn bộ `data/`.
 
-- Ứng dụng được chia thành hai phần rõ ràng: client cho tương tác người dùng và server cho xử lý nghiệp vụ truyền file. Tách riêng Control Plane (TCP) và Data Plane (UDP với cơ chế RDT).
-- `server/main_server.py` là điểm khởi chạy cho máy chủ TCP và vòng lặp xử lý từng client theo luồng riêng.
-- `client/main_client.py` là điểm khởi chạy cho phía client.
-- `server/auth` chứa xác thực người dùng và dữ liệu tài khoản mẫu.
-- `server/control` chứa bộ xử lý lệnh FTP-like, mã phản hồi và trạng thái phiên.
-- `shared` chứa các thành phần dùng chung cho checksum, cấu trúc gói tin và lõi RDT. Các tính năng bao gồm Cửa sổ trượt Go-Back-N, Fast Retransmit và SHA-256.
-- `tests` chứa kiểm thử cho checksum và hành vi truyền trên kênh RDT trong môi trường mất gói.
+## Kiểm thử
 
-## 👥 Phân công công việc
-- **Nguyễn Minh Khôi (Chủ trì Kênh Dữ liệu):** Chịu trách nhiệm gói `shared/` và môi trường `tests/`. Triển khai cấu trúc gói tin Header 13 bytes, Internet Checksum 16-bit, cửa sổ trượt Go-Back-N, Fast Retransmit, mã băm SHA-256 và môi trường giả lập mạng rớt gói `LossyUDPSocket`.
-- **Nguyễn Vũ Đức Duy (Chủ trì Kênh Điều khiển):** Chịu trách nhiệm gói `server/` và `client/`. Triển khai máy chủ TCP, quản lý trạng thái phiên (Session), bộ xử lý các lệnh FTP-like, giao diện CLI và tích hợp các API truyền nhận `reliable_send`/`reliable_recv` từ `rdt_core.py`.
+```bash
+python tests/test_checksum.py
+python tests/test_rdt_lossy.py
+```
+
+Các test hiện là script dùng `assert`, không phải `unittest.TestCase`.
+`test_rdt_lossy.py` kiểm tra RDT trong môi trường UDP giả lập mất gói và có tạo file mẫu trong `tests/`.
+
+Chi tiết thiết kế và flow nằm trong [ARCHITECTURE.md](ARCHITECTURE.md).

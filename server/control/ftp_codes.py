@@ -9,9 +9,12 @@ class FTPReplyCode(Enum):
 
     #Completion reply (positive)
     COMMAND_OK = (200, "Command okay.")
+    FILE_STATUS = (213, "File status.")
+    HELP_MESSAGE = (214, "Help message.")
     SERVICE_READY = (220, "Service ready for new user.")
     GOODBYE = (221, "Goodbye.")
     TRANSFER_COMPLETE = (226, "Closing data connection. Transfer complete.")
+    ENTERING_PASSIVE_MODE = (227, "Entering Passive Mode.")
     LOGIN_SUCCESS = (230, "User logged in successfully.")
     FILE_ACTION_OK = (250, "Requested file action okay, completed.")
     PATH_CREATED = (257, "Pathname created.")
@@ -24,11 +27,13 @@ class FTPReplyCode(Enum):
     CANNOT_OPEN_DATA_CONNECTION = (425, "Cannot open data connection.")
     TRANSFER_ABORTED = (426, "Connection closed; transfer aborted.")
     FILE_TEMPORARILY_UNAVAILABLE = (450, "File unavailable temporarily.")
+    LOCAL_PROCESSING_ERROR = (451, "Requested action aborted: local error in processing.")
     
     #Permanent negative reply: Những lỗi ko thể fix/ko phải do session
     SYNTAX_ERROR = (500, "Syntax error, command not recognized.")
     INVALID_PARAMETER = (501, "Syntax error in parameters or arguments.")
     COMMAND_NOT_IMPLEMENTED = (502, "Command not implemented.")
+    BAD_COMMAND_SEQUENCE = (503, "Bad sequence of commands.")
     NOT_LOGGED_IN = (530, "Not logged in.")
     FILE_UNAVAILABLE = (550, "Requested action not taken. File unavailable.")
 
@@ -43,3 +48,7 @@ class FTPReplyCode(Enum):
             message = self.message
         result = f"{self.code} {message}\r\n"
         return result
+
+    def format_multiline(self, first_message: str, lines: list[str], last_message: str = "End") -> str:
+        body = "".join(f"{line}\r\n" for line in lines)
+        return f"{self.code}-{first_message}\r\n{body}{self.code} {last_message}\r\n"
