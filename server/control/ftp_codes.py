@@ -13,6 +13,7 @@ class FTPReplyCode(Enum):
     HELP_MESSAGE = (214, "Help message.")
     SERVICE_READY = (220, "Service ready for new user.")
     GOODBYE = (221, "Goodbye.")
+    DATA_CONNECTION_OPEN = (225, "Data connection open; no transfer in progress.")
     TRANSFER_COMPLETE = (226, "Closing data connection. Transfer complete.")
     ENTERING_PASSIVE_MODE = (227, "Entering Passive Mode.")
     LOGIN_SUCCESS = (230, "User logged in successfully.")

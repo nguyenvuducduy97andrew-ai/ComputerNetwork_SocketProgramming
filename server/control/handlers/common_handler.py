@@ -79,7 +79,7 @@ HELP_COMMANDS = {
         "description": "Set the transfer mode. S means Stream, B means Block, and C means Compressed."
     },
     "PORT": {
-        "syntax": "PORT <h1,h2,h3,h4,p1,p2>",
+        "syntax": "PORT <udp-port>",
         "description": "Select Active Mode. The client provides its IP address and UDP port for the server data channel."
     },
     "PASV": {
