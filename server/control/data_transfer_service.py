@@ -2,6 +2,7 @@ import os
 import socket
 import zlib
 from pathlib import Path
+import threading
 
 from server.control.session import ClientSession
 from shared.rdt_core import reliable_recv, reliable_send
@@ -234,7 +235,9 @@ def send_data(session: ClientSession, data: bytes) -> None:
     udp_socket, destination_address, should_close = _resolve_send_channel(session)
 
     try:
-        reliable_send(udp_socket, destination_address, data)
+        reliable_send(udp_socket, destination_address, data, cancel_event=session.cancel_event)
+    except Exception as exc:
+        raise DataTransferError("Failed to send data through the UDP channel.") from exc
     finally:
         if should_close:
             udp_socket.close()
@@ -256,7 +259,7 @@ def receive_file(session: ClientSession, save_file_path: Path, append: bool = Fa
         transfer_type = _get_transfer_type(session)
         transfer_mode = _get_transfer_mode(session)
         print(f"[DataTransferService] Receiving file. Transfer type: {transfer_type}, Transfer mode: {transfer_mode}")
-        raw_data = reliable_recv(udp_socket)
+        raw_data = reliable_recv(udp_socket, cancel_event=session.cancel_event)
         data = _apply_incoming_mode(raw_data, transfer_mode)
         data = _apply_incoming_type(data, transfer_type)
 

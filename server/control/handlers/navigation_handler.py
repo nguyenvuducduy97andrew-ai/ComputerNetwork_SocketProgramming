@@ -17,6 +17,8 @@ import stat
 #CDUP: Change to Parent Directory
 #MKD: Make Directory
 #RMD: Remove Directory
+
+#Flow của các lệnh dưới chưa được hoàn thiện:
 #LIST: List files and directories
 #NLST: Name List
 #STAT: File Status

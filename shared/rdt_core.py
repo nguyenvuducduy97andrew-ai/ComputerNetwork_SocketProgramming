@@ -1,5 +1,6 @@
 import socket
 import os
+import threading
 import time
 from .constants import (MAX_PAYLOAD, BUFFER_SIZE, TIMEOUT, FLAG_DATA, FLAG_ACK, FLAG_FIN, WINDOW_SIZE, DUP_ACK_THRESHOLD)
 from .packet_struct import pack_packet, unpack_packet
@@ -7,7 +8,8 @@ from .checksum import verify_checksum
 from typing import Any, Callable, Optional
 
 
-ProgressCallback = Callable[[int, int], None]
+
+ProgressCallback = Callable[[int, int], None] #Mục đích: callback để báo tiến trình truyền dữ liệu (số byte đã gửi/nhận, tổng số byte)
 
 
 def reliable_send(
@@ -15,6 +17,7 @@ def reliable_send(
     dest_addr: tuple,
     data_or_file_path,
     progress_callback: ProgressCallback | None = None,
+    cancel_event: threading.Event | None = None
 ):
     # API gửi file/dữ liệu tin cậy qua UDP sử dụng cơ chế Fast Retransmit (3 Duplicate ACKs) và thuật toán Sliding Window (Go-Back-N)
 
@@ -51,6 +54,9 @@ def reliable_send(
     udp_socket.settimeout(0.01)  # Non-blocking polling cho việc nhận ACK liên tục
 
     while base < total_packets:
+        if cancel_event is not None and cancel_event.is_set():
+            print("[reliable_send] Transfer canceled by user.")
+            return
         # Gửi tất cả các gói tin còn nằm trong phạm vi Cửa sổ
         while next_seq_num < base + WINDOW_SIZE and next_seq_num < total_packets:
             udp_socket.sendto(packets[next_seq_num], dest_addr)
@@ -120,6 +126,7 @@ def reliable_recv(
     save_file_path: Optional[str] = None,
     total_bytes: int | None = None,
     progress_callback: ProgressCallback | None = None,
+    cancel_event: threading.Event | None = None
 ) -> bytes:
     # API nhận dữ liệu tin cậy qua UDP, đảm bảo ghép nối dữ liệu đúng thứ tự và loại bỏ gói trùng lặp và phản hồi ACK tích lũy.
 
@@ -131,7 +138,7 @@ def reliable_recv(
     if progress_callback is not None and total_bytes is not None:
         progress_callback(0, total_bytes)
 
-    while True:
+    while cancel_event is None or not cancel_event.is_set():
         try:
             packet_bytes, sender_addr = udp_socket.recvfrom(BUFFER_SIZE)
             

@@ -66,22 +66,12 @@ def handle_retr(session: ClientSession, args: str | None) -> CommandReplies:
         expected_size=len(outgoing_data),
     )
 
-    try:
+    def _worker() -> str:
         send_data(session, outgoing_data)
         session.transferred_bytes = len(outgoing_data)
-        yield CommandReply(FTPReplyCode.TRANSFER_COMPLETE, f"File {args} sent successfully.")
+        return FTPReplyCode.TRANSFER_COMPLETE.format(f"File {args} sent successfully.")
 
-    except InterruptedError:
-        yield CommandReply(FTPReplyCode.TRANSFER_ABORTED, "Transfer aborted.")
-
-    except DataTransferError as exc:
-        yield CommandReply(FTPReplyCode.CANNOT_OPEN_DATA_CONNECTION, str(exc))
-
-    except OSError as exc:
-        yield CommandReply(FTPReplyCode.TRANSFER_ABORTED, f"Transfer failed: {exc}")
-
-    finally:
-        session.finish_transfer()
+    session.run_transfer(_worker)
 
 
 def handle_stor(session: ClientSession, args: str | None) -> CommandReplies:
@@ -110,24 +100,13 @@ def handle_stor(session: ClientSession, args: str | None) -> CommandReplies:
 
     session.start_transfer("STOR", file_path, direction="UPLOAD")
 
-    try:
+    def _worker() -> str:
         received_size = receive_file(session, file_path, append=False)
-        yield CommandReply(
-            FTPReplyCode.TRANSFER_COMPLETE,
-            f"File {args} received successfully. {received_size} bytes stored.",
+        return FTPReplyCode.TRANSFER_COMPLETE.format(
+            f"File {args} received successfully. {received_size} bytes stored."
         )
 
-    except InterruptedError:
-        yield CommandReply(FTPReplyCode.TRANSFER_ABORTED, "Transfer aborted.")
-
-    except DataTransferError as exc:
-        yield CommandReply(FTPReplyCode.CANNOT_OPEN_DATA_CONNECTION, str(exc))
-
-    except OSError as exc:
-        yield CommandReply(FTPReplyCode.TRANSFER_ABORTED, f"Transfer failed: {exc}")
-
-    finally:
-        session.finish_transfer()
+    session.run_transfer(_worker)
 
 
 def handle_stou(session: ClientSession) -> CommandReplies:
@@ -153,24 +132,13 @@ def handle_stou(session: ClientSession) -> CommandReplies:
 
     session.start_transfer("STOU", file_path, direction="UPLOAD")
 
-    try:
+    def _worker() -> str:
         received_size = receive_file(session, file_path, append=False)
-        yield CommandReply(
-            FTPReplyCode.TRANSFER_COMPLETE,
-            f"File stored as {unique_filename} successfully. {received_size} bytes stored.",
+        return FTPReplyCode.TRANSFER_COMPLETE.format(
+            f"File stored as {unique_filename} successfully. {received_size} bytes stored."
         )
 
-    except InterruptedError:
-        yield CommandReply(FTPReplyCode.TRANSFER_ABORTED, "Transfer aborted.")
-
-    except DataTransferError as exc:
-        yield CommandReply(FTPReplyCode.CANNOT_OPEN_DATA_CONNECTION, str(exc))
-
-    except OSError as exc:
-        yield CommandReply(FTPReplyCode.TRANSFER_ABORTED, f"Transfer failed: {exc}")
-
-    finally:
-        session.finish_transfer()
+    session.run_transfer(_worker)
 
 
 def handle_appe(session: ClientSession, args: str | None) -> CommandReplies:
@@ -199,24 +167,13 @@ def handle_appe(session: ClientSession, args: str | None) -> CommandReplies:
 
     session.start_transfer("APPE", file_path, direction="UPLOAD")
 
-    try:
+    def _worker() -> str:
         received_size = receive_file(session, file_path, append=True)
-        yield CommandReply(
-            FTPReplyCode.TRANSFER_COMPLETE,
-            f"Data appended to {args} successfully. {received_size} bytes appended.",
+        return FTPReplyCode.TRANSFER_COMPLETE.format(
+            f"Data appended to {args} successfully. {received_size} bytes appended."
         )
 
-    except InterruptedError:
-        yield CommandReply(FTPReplyCode.TRANSFER_ABORTED, "Transfer aborted.")
-
-    except DataTransferError as exc:
-        yield CommandReply(FTPReplyCode.CANNOT_OPEN_DATA_CONNECTION, str(exc))
-
-    except OSError as exc:
-        yield CommandReply(FTPReplyCode.TRANSFER_ABORTED, f"Transfer failed: {exc}")
-
-    finally:
-        session.finish_transfer()
+    session.run_transfer(_worker)
 
 
 def handle_abor(session: ClientSession) -> str:

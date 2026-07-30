@@ -2,8 +2,11 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from socket import socket
-from threading import Event, Thread
+from server.control.ftp_codes import FTPReplyCode
+
+import threading
 from datetime import datetime
+from typing import Callable
 
 @dataclass
 class ClientSession: 
@@ -18,7 +21,7 @@ class ClientSession:
     data_connection_mode: str | None = None # "ACTIVE" hoặc "PASSIVE"
 
     current_transfer_command: str | None = None
-
+    control_conn: socket | None = None
     
     active_udp_address: tuple[str, int] | None = None 
 
@@ -37,7 +40,11 @@ class ClientSession:
     last_activity_at: datetime = field(default_factory=datetime.now)
 
     # Event dùng để báo hủy truyền khi Client gửi ABOR
-    cancel_event: Event = field(default_factory=Event)
+
+    transfer_thread: threading.Thread | None = None
+    conn_send_lock: threading.Lock = field(default_factory=threading.Lock) #Bảo vệ việc gửi dữ liệu qua socket
+    cancel_event: threading.Event = field(default_factory=threading.Event) #Dùng để báo hủy truyền file
+    transfer_lock: threading.Lock = field(default_factory=threading.Lock) #Bảo vệ trạng thái truyền file
 
     def get_absolute_current_directory(self)->Path:
         return (self.server_root.resolve()/self.current_directory).resolve()
@@ -115,6 +122,38 @@ class ClientSession:
         self.reset_rename_state()
         self.reset_data_connection()
 
+    def run_transfer(self, worker_fn: Callable[[], str]) -> None:
+        """
+        worker_fn: không tham số, thực hiện transfer, trả về reply string cuối
+        (vd '226 ...'), hoặc raise để báo lỗi. Chạy trong thread riêng.
+        """
+        with self.transfer_lock:
+            if self.transfer_thread is not None and self.transfer_thread.is_alive():
+                raise RuntimeError("A transfer is already in progress for this session.")
+
+            def _run() -> None:
+                try:
+                    final_reply = worker_fn()
+                except InterruptedError:
+                    final_reply = FTPReplyCode.TRANSFER_ABORTED.format("Abort request accepted.")
+                except Exception as exc:
+                    final_reply = FTPReplyCode.TRANSFER_ABORTED.format(f"Transfer failed: {exc}")
+                finally:
+                    self.finish_transfer()
+
+                if self.control_conn is not None:
+                    with self.conn_send_lock:
+                        try:
+                            self.control_conn.sendall(final_reply.encode("utf-8"))
+                        except OSError:
+                            pass
+
+                with self.transfer_lock:
+                    self.transfer_thread = None
+
+            thread = threading.Thread(target=_run, daemon=True)
+            self.transfer_thread = thread
+            thread.start()
 
 
 

@@ -7,15 +7,17 @@ from server.control.ftp_codes import FTPReplyCode
 from server.control.command_handler import handle_command
 from server.control.session import ClientSession
 
-
+# Control thread:
 def handle_client(conn: socket.socket, addr: tuple[str, int], server_root: Path) -> None:
     """Per-connection handler: send welcome, receive commands, respond."""
     with conn:
+        session: ClientSession | None = None
         try:
             # Send initial service ready message
             conn.sendall(FTPReplyCode.SERVICE_READY.format().encode())
 
             session = ClientSession(client_address=addr, server_root=server_root)
+            session.control_conn = conn
 
             buffer = bytearray()
 
@@ -46,7 +48,8 @@ def handle_client(conn: socket.socket, addr: tuple[str, int], server_root: Path)
 
                     for response, close_control in iter_command_replies(result):
                         try:
-                            conn.sendall(response.encode("utf-8"))
+                            with session.conn_send_lock:
+                                conn.sendall(response.encode("utf-8"))
                             reply_code = response.split(" ", 1)[0]
                             print(
                                 f"[{addr[0]}:{addr[1]}] "
@@ -66,6 +69,10 @@ def handle_client(conn: socket.socket, addr: tuple[str, int], server_root: Path)
                 conn.sendall(FTPReplyCode.SERVICE_UNAVAILABLE.format().encode())
             except Exception:
                 pass
+        finally:
+            if session is not None:
+                session.reset_data_connection()
+                print(f"[{addr[0]}:{addr[1]}] Connection closed.")
 
 
 def run_server(host: str = '0.0.0.0', port: int = 2121) -> None:
