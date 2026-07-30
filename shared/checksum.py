@@ -3,7 +3,7 @@ import hashlib
 def compute_checksum(data_bytes: bytes) -> int:
     # Thuật toán Internet Checksum 16-bit (cộng bù 1 tất cả các cụm 16-bit).
     if len(data_bytes) % 2 == 1:
-        data_bytes += b'\x100'
+        data_bytes += b'\x00' # Thêm byte 0 nếu dữ liệu có độ dài lẻ để đảm bảo tính toán checksum chính xác.
     
     total_sum = 0
     for i in range(0, len(data_bytes), 2):
