@@ -183,4 +183,6 @@ def handle_abor(session: ClientSession) -> str:
         return FTPReplyCode.COMMAND_OK.format("No transfer in progress to abort.")
 
     session.request_abort()
-    return FTPReplyCode.TRANSFER_ABORTED.format("Abort request accepted.")
+    session.close_current_data_socket()
+    session.reset_data_connection()
+    return FTPReplyCode.TRANSFER_COMPLETE.format("Abort command successful.")

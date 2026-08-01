@@ -48,6 +48,7 @@ def handle_pass(
     return FTPReplyCode.LOGIN_SUCCESS.format()
 
 def handle_quit(session: ClientSession) -> CommandReplies:
+    session.prepare_control_close()
     session.logout()
     yield CommandReply(
         FTPReplyCode.GOODBYE,

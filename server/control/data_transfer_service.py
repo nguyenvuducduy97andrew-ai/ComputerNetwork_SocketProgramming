@@ -2,14 +2,25 @@ import os
 import socket
 import zlib
 from pathlib import Path
-import threading
 
 from server.control.session import ClientSession
+from shared.checksum import verify_checksum
+from shared.constants import BUFFER_SIZE, FLAG_ACK, FLAG_SYN, HEADER_SIZE
+from shared.packet_struct import pack_packet, unpack_packet
 from shared.rdt_core import reliable_recv, reliable_send
 
 
 class DataTransferError(Exception):
     """Lỗi cấu hình hoặc thực thi data channel."""
+
+
+ACTIVE_HANDSHAKE_TIMEOUT = 1.0
+ACTIVE_HANDSHAKE_RETRIES = 5
+
+
+def _raise_if_transfer_cancelled(session: ClientSession) -> None:
+    if session.cancel_event.is_set():
+        raise InterruptedError("Transfer aborted.")
 
 
 def _get_transfer_type(session: ClientSession) -> str:
@@ -53,11 +64,6 @@ def validate_data_connection(
         return
 
     if session.data_connection_mode == "ACTIVE":
-        if normalized_direction == "RECEIVE":
-            raise DataTransferError(
-                "Active-mode uploads are not supported. Use PASV before uploading."
-            )
-
         if session.active_udp_address is None:
             raise DataTransferError(
                 "Active data address is not configured. Use PORT before transferring data."
@@ -67,7 +73,6 @@ def validate_data_connection(
     raise DataTransferError(
         "Data connection mode is not selected. Use PORT or PASV before transferring data."
     )
-
 
 def _discover_passive_client(
     session: ClientSession,
@@ -128,7 +133,59 @@ def _resolve_send_channel(session: ClientSession) -> tuple[socket.socket, tuple[
     raise DataTransferError("Data connection mode is not selected. Use PORT or PASV before transferring data.")
 
 
-def _resolve_receive_channel(session: ClientSession) -> tuple[socket.socket, bool]:
+def _open_active_receive_channel(
+    session: ClientSession,
+) -> tuple[socket.socket, tuple[str, int]]:
+    client_address = session.active_udp_address
+    if client_address is None:
+        raise DataTransferError(
+            "Active data address is not configured. Use PORT before uploading."
+        )
+
+    udp_socket = _create_active_udp_socket()
+
+    try:
+        udp_socket.bind(("", 0))
+        session.register_data_socket(udp_socket)
+        udp_socket.settimeout(ACTIVE_HANDSHAKE_TIMEOUT)
+        syn_packet = pack_packet(seq=0, ack=0, flags=FLAG_SYN)
+
+        for _ in range(ACTIVE_HANDSHAKE_RETRIES):
+            _raise_if_transfer_cancelled(session)
+            udp_socket.sendto(syn_packet, client_address)
+
+            try:
+                response, sender_address = udp_socket.recvfrom(BUFFER_SIZE)
+            except socket.timeout:
+                _raise_if_transfer_cancelled(session)
+                continue
+
+            if sender_address != client_address:
+                continue
+
+            if len(response) < HEADER_SIZE or not verify_checksum(response):
+                continue
+
+            packet = unpack_packet(response)
+            if (
+                packet["flags"] == (FLAG_SYN | FLAG_ACK)
+                and packet["length"] == 0
+                and packet["payload"] == b""
+            ):
+                return udp_socket, sender_address
+
+        raise DataTransferError(
+            "Timed out while opening the active upload channel."
+        )
+    except BaseException:
+        session.unregister_data_socket(udp_socket)
+        udp_socket.close()
+        raise
+
+
+def _resolve_receive_channel(
+    session: ClientSession,
+) -> tuple[socket.socket, tuple[str, int] | None, bool]:
     """
     Chọn socket dùng để nhận dữ liệu.
 
@@ -142,12 +199,15 @@ def _resolve_receive_channel(session: ClientSession) -> tuple[socket.socket, boo
         if session.passive_udp_socket is None:
             raise DataTransferError("Passive UDP socket is not available. Use PASV before transferring data.")
 
-        return session.passive_udp_socket, False
+        return (
+            session.passive_udp_socket,
+            session.passive_client_address,
+            False,
+        )
 
     if session.data_connection_mode == "ACTIVE":
-        raise DataTransferError(
-            "ACTIVE receive is not fully configured. Server needs a bound UDP socket or a negotiated receive port."
-        )
+        udp_socket, client_address = _open_active_receive_channel(session)
+        return udp_socket, client_address, True
 
     raise DataTransferError("Data connection mode is not selected. Use PORT or PASV before transferring data.")
 
@@ -223,9 +283,11 @@ def send_file(session: ClientSession, file_path: Path) -> None:
     udp_socket, destination_address, should_close = _resolve_send_channel(session)
 
     try:
+        session.register_data_socket(udp_socket)
         data = prepare_outgoing_file_data(session, file_path)
         reliable_send(udp_socket, destination_address, data)
     finally:
+        session.unregister_data_socket(udp_socket)
         if should_close:
             udp_socket.close()
 
@@ -235,10 +297,14 @@ def send_data(session: ClientSession, data: bytes) -> None:
     udp_socket, destination_address, should_close = _resolve_send_channel(session)
 
     try:
+        session.register_data_socket(udp_socket)
         reliable_send(udp_socket, destination_address, data, cancel_event=session.cancel_event)
+    except InterruptedError:
+        raise
     except Exception as exc:
         raise DataTransferError("Failed to send data through the UDP channel.") from exc
     finally:
+        session.unregister_data_socket(udp_socket)
         if should_close:
             udp_socket.close()
 
@@ -253,13 +319,18 @@ def receive_file(session: ClientSession, save_file_path: Path, append: bool = Fa
     Trả về số byte thực tế đã ghi.
     """
 
-    udp_socket, should_close = _resolve_receive_channel(session)
+    udp_socket, expected_peer, should_close = _resolve_receive_channel(session)
 
     try:
+        session.register_data_socket(udp_socket)
         transfer_type = _get_transfer_type(session)
         transfer_mode = _get_transfer_mode(session)
         print(f"[DataTransferService] Receiving file. Transfer type: {transfer_type}, Transfer mode: {transfer_mode}")
-        raw_data = reliable_recv(udp_socket, cancel_event=session.cancel_event)
+        raw_data = reliable_recv(
+            udp_socket,
+            cancel_event=session.cancel_event,
+            expected_peer=expected_peer,
+        )
         data = _apply_incoming_mode(raw_data, transfer_mode)
         data = _apply_incoming_type(data, transfer_type)
 
@@ -272,5 +343,6 @@ def receive_file(session: ClientSession, save_file_path: Path, append: bool = Fa
         session.transferred_bytes = len(data)
         return len(data)
     finally:
+        session.unregister_data_socket(udp_socket)
         if should_close:
             udp_socket.close()

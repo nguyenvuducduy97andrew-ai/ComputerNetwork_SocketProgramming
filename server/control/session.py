@@ -27,6 +27,7 @@ class ClientSession:
 
     passive_udp_socket: socket | None = None 
     passive_client_address: tuple[str, int] | None = None
+    current_data_socket: socket | None = None
 
     pending_rename_path: Path | None = None 
 
@@ -45,6 +46,8 @@ class ClientSession:
     conn_send_lock: threading.Lock = field(default_factory=threading.Lock) #Bảo vệ việc gửi dữ liệu qua socket
     cancel_event: threading.Event = field(default_factory=threading.Event) #Dùng để báo hủy truyền file
     transfer_lock: threading.Lock = field(default_factory=threading.Lock) #Bảo vệ trạng thái truyền file
+    suppress_transfer_reply: bool = False
+    cleanup_started: bool = False
 
     def get_absolute_current_directory(self)->Path:
         return (self.server_root.resolve()/self.current_directory).resolve()
@@ -102,6 +105,46 @@ class ClientSession:
         if self.transfer_in_progress:
             self.cancel_event.set()
 
+    def register_data_socket(self, data_socket: socket) -> None:
+        with self.transfer_lock:
+            if self.cleanup_started:
+                raise InterruptedError("Session is closing.")
+            self.current_data_socket = data_socket
+
+    def unregister_data_socket(self, data_socket: socket) -> None:
+        with self.transfer_lock:
+            if self.current_data_socket is data_socket:
+                self.current_data_socket = None
+
+    def close_current_data_socket(self) -> None:
+        with self.transfer_lock:
+            data_socket = self.current_data_socket
+            self.current_data_socket = None
+
+        if data_socket is not None:
+            try:
+                data_socket.close()
+            except OSError:
+                pass
+
+    def prepare_control_close(self) -> None:
+        with self.conn_send_lock:
+            self.suppress_transfer_reply = True
+
+        self.request_abort()
+        self.close_current_data_socket()
+
+    def send_transfer_reply(self, reply: str) -> bool:
+        with self.conn_send_lock:
+            if self.suppress_transfer_reply or self.control_conn is None:
+                return False
+
+            try:
+                self.control_conn.sendall(reply.encode("utf-8"))
+                return True
+            except OSError:
+                return False
+
     def reset_rename_state(self) -> None:
         """
         Xóa trạng thái RNFR đang chờ RNTO.
@@ -122,6 +165,37 @@ class ClientSession:
         self.reset_rename_state()
         self.reset_data_connection()
 
+    def cleanup(self, *, wait_timeout: float = 2.5) -> None:
+        """Release all resources owned by this client session."""
+        with self.transfer_lock:
+            if self.cleanup_started:
+                return
+            self.cleanup_started = True
+            transfer_thread = self.transfer_thread
+
+        self.prepare_control_close()
+        self.reset_data_connection()
+
+        if (
+            transfer_thread is not None
+            and transfer_thread is not threading.current_thread()
+            and transfer_thread.is_alive()
+        ):
+            transfer_thread.join(wait_timeout)
+
+        self.username = None
+        self.authenticated = False
+        self.reset_rename_state()
+
+        with self.conn_send_lock:
+            self.control_conn = None
+
+        if transfer_thread is None or not transfer_thread.is_alive():
+            if self.transfer_in_progress:
+                self.finish_transfer()
+            with self.transfer_lock:
+                self.transfer_thread = None
+
     def run_transfer(self, worker_fn: Callable[[], str]) -> None:
         """
         worker_fn: không tham số, thực hiện transfer, trả về reply string cuối
@@ -135,18 +209,13 @@ class ClientSession:
                 try:
                     final_reply = worker_fn()
                 except InterruptedError:
-                    final_reply = FTPReplyCode.TRANSFER_ABORTED.format("Abort request accepted.")
+                    final_reply = FTPReplyCode.TRANSFER_ABORTED.format("Transfer aborted.")
                 except Exception as exc:
                     final_reply = FTPReplyCode.TRANSFER_ABORTED.format(f"Transfer failed: {exc}")
                 finally:
                     self.finish_transfer()
 
-                if self.control_conn is not None:
-                    with self.conn_send_lock:
-                        try:
-                            self.control_conn.sendall(final_reply.encode("utf-8"))
-                        except OSError:
-                            pass
+                self.send_transfer_reply(final_reply)
 
                 with self.transfer_lock:
                     self.transfer_thread = None

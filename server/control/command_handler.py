@@ -61,6 +61,12 @@ SUPPORTED_COMMANDS = {
     "RETR", "STOR", "STOU", "APPE", "ABOR",
     "DELE", "RNFR", "RNTO", "HASH",
 }
+COMMANDS_ALLOWED_DURING_TRANSFER = {
+    "ABOR",
+    "NOOP",
+    "STAT",
+    "QUIT",
+}
 
 
 def handle_command(
@@ -82,6 +88,10 @@ def handle_command(
         print(f"Dispatching server command: {command} {logged_args}")
     else:
         print(f"Dispatching server command: {command}")
+
+    # Check if the command is allowed during a data transfer
+    if session.transfer_in_progress and command not in COMMANDS_ALLOWED_DURING_TRANSFER:
+        return FTPReplyCode.BAD_COMMAND_SEQUENCE.format("Command rejected: a data transfer is in progress.")
 
     # ---------------------------------------------------------
     # Commands allowed before authentication
@@ -112,6 +122,8 @@ def handle_command(
         return FTPReplyCode.COMMAND_NOT_IMPLEMENTED.format(
             f"Command {command} is not implemented. Enter HELP to see available commands."
         )
+
+    
 
     # All remaining commands require authentication.
     if not session.authenticated:

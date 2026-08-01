@@ -61,34 +61,37 @@ def run_client(
 
         context = ClientContext(server_host=host)
 
-        while True:
-            try:
-                user_input = input("ftp> ").strip()
-            except EOFError:
-                print("\nExiting Hybrid FTP Client.")
-                break
-            except KeyboardInterrupt:
-                print("\nExiting Hybrid FTP Client.")
-                break
+        try:
+            while True:
+                try:
+                    user_input = input("ftp> ").strip()
+                except EOFError:
+                    print("\nExiting Hybrid FTP Client.")
+                    break
+                except KeyboardInterrupt:
+                    print("\nExiting Hybrid FTP Client.")
+                    break
 
-            if not user_input:
-                continue
+                if not user_input:
+                    continue
 
-            command, args = parse_command_line(user_input)
+                command, args = parse_command_line(user_input)
 
-            try:
-                should_continue = handle_command(
-                    control,
-                    context,
-                    command,
-                    args,
-                )
-            except (ConnectionError, OSError) as exc:
-                print(f"Error connecting to server: {exc}")
-                break
+                try:
+                    should_continue = handle_command(
+                        control,
+                        context,
+                        command,
+                        args,
+                    )
+                except (ConnectionError, OSError) as exc:
+                    print(f"Error connecting to server: {exc}")
+                    break
 
-            if not should_continue:
-                break
+                if not should_continue:
+                    break
+        finally:
+            context.reset_data_connection()
 
 
 if __name__ == "__main__":

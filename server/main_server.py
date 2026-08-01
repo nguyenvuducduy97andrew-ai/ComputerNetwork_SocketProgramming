@@ -71,7 +71,7 @@ def handle_client(conn: socket.socket, addr: tuple[str, int], server_root: Path)
                 pass
         finally:
             if session is not None:
-                session.reset_data_connection()
+                session.cleanup()
                 print(f"[{addr[0]}:{addr[1]}] Connection closed.")
 
 

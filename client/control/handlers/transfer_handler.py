@@ -4,6 +4,7 @@
 from pathlib import Path
 import re
 import socket
+import time
 
 from client.control.cli_monitor import make_progress_callback
 from client.control.client_control import ControlConnection, parse_reply
@@ -14,12 +15,14 @@ from client.control.data_transfer_service import (
 )
 from client.control.handlers.common import send_and_print
 from client.control.context import ClientContext
-from shared.constants import FLAG_SYN
-from shared.packet_struct import pack_packet
+from shared.checksum import verify_checksum
+from shared.constants import BUFFER_SIZE, FLAG_ACK, FLAG_SYN, HEADER_SIZE
+from shared.packet_struct import pack_packet, unpack_packet
 from shared.rdt_core import reliable_recv, reliable_send
 
 
 TRANSFER_SIZE_PATTERN = re.compile(r"\bBYTES=(\d+)\b", re.IGNORECASE)
+ACTIVE_UPLOAD_HANDSHAKE_TIMEOUT = 6.0
 
 
 def _send_passive_probe(
@@ -68,11 +71,84 @@ def _require_upload_channel(
     if not _validate_transfer_settings(session):
         return None, None
 
+    if session.data_connection_mode == "ACTIVE":
+        return session.ensure_data_socket(), None
+
     if session.data_connection_mode != "PASSIVE" or session.data_peer_address is None:
-        print("Configure PASV before uploading.")
+        print("Configure PORT or PASV before uploading.")
         return None, None
 
     return session.ensure_data_socket(), session.data_peer_address
+
+
+def _wait_for_active_upload_peer(
+    data_socket: socket.socket,
+    session: ClientContext,
+) -> tuple[str, int]:
+    expected_server_ip = socket.gethostbyname(session.server_host)
+    deadline = time.monotonic() + ACTIVE_UPLOAD_HANDSHAKE_TIMEOUT
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                "Timed out waiting for the server's active upload SYN."
+            )
+
+        data_socket.settimeout(remaining)
+        try:
+            response, server_address = data_socket.recvfrom(BUFFER_SIZE)
+        except socket.timeout as exc:
+            raise TimeoutError(
+                "Timed out waiting for the server's active upload SYN."
+            ) from exc
+
+        if server_address[0] != expected_server_ip:
+            continue
+
+        if len(response) < HEADER_SIZE or not verify_checksum(response):
+            continue
+
+        packet = unpack_packet(response)
+        if (
+            packet["flags"] != FLAG_SYN
+            or packet["length"] != 0
+            or packet["payload"] != b""
+        ):
+            continue
+
+        syn_ack = pack_packet(
+            seq=0,
+            ack=0,
+            flags=FLAG_SYN | FLAG_ACK,
+        )
+        data_socket.sendto(syn_ack, server_address)
+        return server_address
+
+
+def _resolve_upload_peer(
+    data_socket: socket.socket,
+    configured_peer: tuple[str, int] | None,
+    session: ClientContext,
+) -> tuple[str, int]:
+    if session.data_connection_mode == "ACTIVE":
+        return _wait_for_active_upload_peer(data_socket, session)
+
+    if configured_peer is None:
+        raise RuntimeError("Passive upload peer is not configured.")
+
+    return configured_peer
+
+
+def _report_upload_channel_failure(
+    control: ControlConnection,
+    error: BaseException,
+) -> None:
+    print(f"Could not open upload data channel: {error}")
+    try:
+        print(control.read_reply_line())
+    except (ConnectionError, OSError) as reply_error:
+        print(f"Could not read the final transfer reply: {reply_error}")
 
 
 def _read_preliminary_reply(
@@ -152,7 +228,7 @@ def handle_stor(control: ControlConnection, session: ClientContext, args: str | 
         return True
 
     data_socket, peer_address = _require_upload_channel(session)
-    if data_socket is None or peer_address is None:
+    if data_socket is None:
         return True
     upload_path = _resolve_local_upload_path(filename)
     if not upload_path.exists() or not upload_path.is_file():
@@ -175,6 +251,16 @@ def handle_stor(control: ControlConnection, session: ClientContext, args: str | 
     if not ready:
         return True
 
+    try:
+        peer_address = _resolve_upload_peer(
+            data_socket,
+            peer_address,
+            session,
+        )
+    except (OSError, RuntimeError, TimeoutError) as error:
+        _report_upload_channel_failure(control, error)
+        return True
+
     reliable_send(
         data_socket,
         peer_address,
@@ -194,7 +280,7 @@ def handle_stou(control: ControlConnection, session: ClientContext, args: str | 
         return True
 
     data_socket, peer_address = _require_upload_channel(session)
-    if data_socket is None or peer_address is None:
+    if data_socket is None:
         return True
 
     upload_path = _resolve_local_upload_path(filename)
@@ -218,6 +304,16 @@ def handle_stou(control: ControlConnection, session: ClientContext, args: str | 
     if not ready:
         return True
 
+    try:
+        peer_address = _resolve_upload_peer(
+            data_socket,
+            peer_address,
+            session,
+        )
+    except (OSError, RuntimeError, TimeoutError) as error:
+        _report_upload_channel_failure(control, error)
+        return True
+
     reliable_send(
         data_socket,
         peer_address,
@@ -237,7 +333,7 @@ def handle_appe(control: ControlConnection, session: ClientContext, args: str | 
         return True
 
     data_socket, peer_address = _require_upload_channel(session)
-    if data_socket is None or peer_address is None:
+    if data_socket is None:
         return True
 
     upload_path = _resolve_local_upload_path(filename)
@@ -259,6 +355,16 @@ def handle_appe(control: ControlConnection, session: ClientContext, args: str | 
 
     ready, _ = _read_preliminary_reply(control)
     if not ready:
+        return True
+
+    try:
+        peer_address = _resolve_upload_peer(
+            data_socket,
+            peer_address,
+            session,
+        )
+    except (OSError, RuntimeError, TimeoutError) as error:
+        _report_upload_channel_failure(control, error)
         return True
 
     reliable_send(
