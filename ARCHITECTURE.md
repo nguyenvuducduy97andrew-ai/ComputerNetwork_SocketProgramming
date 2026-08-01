@@ -312,12 +312,16 @@ Server là nguồn quyết định cuối cùng về xác thực, filesystem và
 - `data/server_storage/`: thư mục dữ liệu có trong repository nhưng chưa được cấu hình làm server root riêng.
 - `tests/test_checksum.py`: checksum và packet.
 - `tests/test_rdt_lossy.py`: truyền RDT qua socket giả lập mất gói.
+- `tests/test_active_upload.py`: active SYN/SYN-ACK và upload end-to-end.
+- `tests/test_rdt_peer_filtering.py`: bỏ DATA/ACK/FIN từ UDP peer không mong đợi.
+- `tests/test_transfer_cancellation_cleanup.py`: cancel RDT và cleanup worker/socket/session.
 
-Các test hiện được viết dưới dạng script dùng `assert`:
+Chạy các test legacy và suite `unittest`:
 
 ```bash
 python tests/test_checksum.py
 python tests/test_rdt_lossy.py
+python -m unittest -v tests.test_active_upload tests.test_rdt_peer_filtering tests.test_transfer_cancellation_cleanup
 ```
 
 ## 9. Trạng thái đáp ứng và giới hạn kỹ thuật

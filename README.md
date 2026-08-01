@@ -101,7 +101,6 @@ Mỗi lệnh truyền dữ liệu trả reply sơ bộ `125`/`150`; worker thự
 ### Hạn chế đã biết
 
 - Client CLI hiện xử lý transfer đồng bộ, nên khó nhập `ABOR` tương tác từ chính cửa sổ client trong lúc handler đang chờ transfer; server đã có cancellation nhưng client cần tách luồng nhập/control để khai thác đầy đủ.
-- Luồng reply của `ABOR` chưa được đồng bộ hoàn chỉnh: handler xác nhận command còn worker phát reply hủy transfer, nên cần thống nhất ownership/thứ tự reply.
 - RDT dùng cửa sổ cố định và chưa có tổng deadline/số lần retry tối đa cho toàn bộ transfer.
 - Upload/download hiện có thể nạp toàn bộ payload vào RAM, chưa tối ưu cho file lớn.
 - Lệnh `HASH` hỗ trợ SHA-256 nhưng client chưa tự động so sánh hash trước và sau mọi transfer.
@@ -157,7 +156,10 @@ Mỗi lệnh truyền dữ liệu trả reply sơ bộ `125`/`150`; worker thự
 │   └── server_storage/
 ├── tests/
 │   ├── test_checksum.py
-│   └── test_rdt_lossy.py
+│   ├── test_rdt_lossy.py
+│   ├── test_active_upload.py
+│   ├── test_rdt_peer_filtering.py
+│   └── test_transfer_cancellation_cleanup.py
 ├── docs/
 └── report/
 ```
@@ -169,11 +171,13 @@ Lưu ý: mặc dù repository có `data/server_storage/`, implementation hiện 
 ```bash
 python tests/test_checksum.py
 python tests/test_rdt_lossy.py
+python tests/test_active_upload.py
+python tests/test_rdt_peer_filtering.py
+python tests/test_transfer_cancellation_cleanup.py
 ```
 
-Các test hiện là script dùng `assert`, không phải `unittest.TestCase`.
-`test_rdt_lossy.py` kiểm tra RDT trong môi trường UDP giả lập mất gói và có tạo file mẫu trong `tests/`.
+Mỗi lệnh trên chạy một nhóm kiểm thử độc lập, đều hỗ trợ chạy trực tiếp bằng cú pháp `python tests/<tên_file>.py`.
+`test_rdt_lossy.py` kiểm tra RDT trong môi trường UDP giả lập mất gói và có tạo file mẫu tạm trong `tests/`.
 
-Các flow Active Upload, lọc UDP peer và cleanup/cancellation đã được kiểm tra thêm bằng các bài kiểm tra tích hợp thủ công; hiện chưa được đóng gói đầy đủ thành test suite tự động trong repository.
 
 Chi tiết thiết kế và flow nằm trong [ARCHITECTURE.md](ARCHITECTURE.md).
