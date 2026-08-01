@@ -73,6 +73,7 @@ TCP receive buffer
 - dispatch sang handler theo nhóm chức năng;
 - trả `502` cho command không được hỗ trợ;
 - che argument của `PASS` khi ghi log.
+- khi transfer đang chạy, chỉ cho phép `ABOR`, `NOOP`, `STAT` và `QUIT`; command khác nhận `503`.
 
 ### 2.3 Reply một dòng, nhiều dòng và nhiều giai đoạn
 
@@ -103,7 +104,9 @@ Hai khái niệm khác nhau cần được giữ riêng:
 - `CommandHandlerResult`: chuỗi reply cũ hoặc iterator nhiều reply.
 - `iter_command_replies()`: chuẩn hóa hai dạng để vòng lặp server gửi thống nhất.
 
-`QUIT` dùng `close_control=True`. `LIST`, `RETR`, `STOR`, `STOU` và `APPE` dùng generator để phát reply trước và sau data transfer.
+`QUIT` dùng `close_control=True`. Các handler `RETR`, `STOR`, `STOU` và `APPE` dùng generator chỉ để phát reply sơ bộ `125`/`150`, sau đó khởi động worker và kết thúc generator để control thread quay lại `recv()` ngay. Reply cuối `226`/`426` do worker gửi qua `ClientSession.control_conn`. `conn_send_lock` ngăn control thread và worker ghi xen byte lên TCP socket, nhưng không tự giải quyết thứ tự logic giữa hai reply độc lập.
+
+`LIST` hiện vẫn thực hiện data transfer đồng bộ trong control flow, chưa dùng cùng worker lifecycle với các lệnh truyền file.
 
 ## 3. Trạng thái phiên
 
@@ -136,7 +139,7 @@ Hai khái niệm khác nhau cần được giữ riêng:
 | Active UDP | `active_udp_address` |
 | Passive UDP | `passive_udp_socket`, `passive_client_address` |
 | Rename | `pending_rename_path` |
-| Transfer | command, file, direction, kích thước, số byte và `cancel_event` |
+| Transfer | command, file, direction, kích thước, số byte, worker, `cancel_event` và `current_data_socket` |
 
 Session có helper để:
 
@@ -144,8 +147,13 @@ Session có helper để:
 - reset data connection và đóng passive socket;
 - bắt đầu/kết thúc transfer;
 - đánh dấu abort;
+- đăng ký/đóng data socket đang được worker sử dụng;
+- gửi reply worker dưới `conn_send_lock`;
+- cleanup session idempotent khi `QUIT`, mất TCP connection hoặc có lỗi;
 - reset trạng thái `RNFR`/`RNTO`;
 - logout.
+
+Mỗi session chỉ cho phép một transfer worker tại một thời điểm. Đây là mô hình multi-thread trong một process: server có control thread riêng cho từng client và có thể thêm worker transfer cho session, không tạo process riêng.
 
 Các handler filesystem resolve đường dẫn rồi kiểm tra đường dẫn vẫn nằm dưới `server_root`, nhằm ngăn path traversal ra ngoài vùng dữ liệu server.
 
@@ -155,10 +163,9 @@ Các handler filesystem resolve đường dẫn rồi kiểm tra đường dẫn
 
 1. Client tạo và bind UDP socket.
 2. Client gửi `PORT <port>` qua TCP.
-3. Server lưu `(client_ip, port)` trong `active_udp_address`.
+3. Server kết hợp IP của TCP peer với port đã nhận và lưu trong `active_udp_address`.
 4. Với download hoặc `LIST`, server tạo UDP socket tạm và gửi đến địa chỉ client.
-
-Active-mode upload hiện không được hỗ trợ.
+5. Với upload, server tạo UDP receive socket trên cổng động, gửi `SYN` đến client và chờ đúng `SYN|ACK` trước khi nhận RDT. Client dùng endpoint nguồn của `SYN` làm peer upload.
 
 ### 4.2 Passive mode
 
@@ -167,7 +174,7 @@ Active-mode upload hiện không được hỗ trợ.
 3. Server trả `227 ... UDP_PORT=<port>`.
 4. Client giữ UDP socket của nó và lưu `(server_host, port)` vào `data_peer_address`.
 5. Khi server cần gửi, client gửi một packet probe `SYN` để server khám phá địa chỉ UDP thực của client.
-6. Upload dùng chính passive socket phía server để nhận dữ liệu.
+6. Upload dùng chính passive socket phía server để nhận dữ liệu và lọc packet theo peer dự kiến.
 
 Chọn lại `PORT` hoặc `PASV` gọi reset trước, nhờ đó socket và địa chỉ của mode cũ không bị tái sử dụng.
 
@@ -180,6 +187,7 @@ Chọn lại `PORT` hoặc `PASV` gọi reset trước, nhờ đó socket và đ
 - kiểm tra data channel theo hướng `SEND`/`RECEIVE`;
 - resolve socket và peer address cho active/passive;
 - gọi `reliable_send()` hoặc `reliable_recv()`;
+- truyền `cancel_event` xuống RDT và kiểm tra đúng UDP peer;
 - áp dụng TYPE/MODE;
 - hỗ trợ ghi đè hoặc append file.
 
@@ -218,6 +226,10 @@ sequenceDiagram
     participant S as Server
     C->>S: STOR/STOU/APPE (TCP)
     S-->>C: 150 Ready (TCP)
+    opt Active mode
+        S->>C: UDP SYN
+        C->>S: UDP SYN + ACK
+    end
     C->>S: UDP/RDT data
     S-->>C: 226 Transfer complete (TCP)
 ```
@@ -253,12 +265,31 @@ Payload tối đa là 1024 byte. Các flag gồm `SYN`, `ACK`, `FIN` và `DATA`.
 - Internet checksum 16-bit cho packet;
 - FIN handshake để kết thúc;
 - callback `(transferred_bytes, total_bytes)` cho progress monitor.
+- `cancel_event` để ngắt send/receive bằng `InterruptedError`;
+- `expected_peer` để bỏ packet từ UDP endpoint không mong đợi.
 
 `reliable_send()` nhận bytes hoặc đường dẫn file và gửi đến một UDP peer. `reliable_recv()` ráp payload đúng thứ tự, có thể trả bytes hoặc ghi ra file.
 
 `shared/checksum.py` cũng cung cấp SHA-256 dùng bởi lệnh `HASH`.
 
-## 6. Phân chia command handler
+Cancellation không dùng progress callback. Progress callback chỉ báo số byte đã xử lý cho giao diện; `cancel_event` là kênh điều khiển riêng được kiểm tra trong các vòng gửi, nhận, retransmit và FIN.
+
+## 6. Worker, ABOR và cleanup
+
+Flow transfer file hiện tại:
+
+```text
+control thread: command → validate → 150 → start worker → recv command tiếp theo
+worker thread:  resolve data channel → RDT → cleanup transfer → gửi 226/426
+```
+
+`ABOR` đặt `cancel_event`, đóng `current_data_socket` để đánh thức thao tác UDP đang chờ và reset cấu hình data channel. RDT phát `InterruptedError`; worker chuyển lỗi này thành reply hủy transfer.
+
+Session cleanup được gọi trong `main_server.handle_client()` ở khối `finally`. Cleanup có tính idempotent, chặn worker gửi reply sau khi control connection chuẩn bị đóng, yêu cầu abort, đóng data socket hiện hành và passive socket, chờ worker trong thời gian giới hạn rồi xóa trạng thái xác thực/rename/transfer.
+
+Hạn chế hiện tại của `ABOR`: handler và worker đều có thể phát reply liên quan đến cùng lần hủy. `conn_send_lock` chỉ đảm bảo dữ liệu TCP không bị trộn, không đảm bảo ownership hay thứ tự reply. Thiết kế cần thống nhất worker là nơi duy nhất gửi reply cuối, hoặc đồng bộ rõ chuỗi reply FTP `426` rồi `226`.
+
+## 7. Phân chia command handler
 
 Client và server cùng chia handler theo chức năng:
 
@@ -273,7 +304,7 @@ Client và server cùng chia handler theo chức năng:
 
 Server là nguồn quyết định cuối cùng về xác thực, filesystem và tính hợp lệ của command. Kiểm tra phía client chỉ giúp phản hồi nhanh và không thay thế validation phía server.
 
-## 7. Dữ liệu và kiểm thử
+## 8. Dữ liệu và kiểm thử
 
 - `server/auth/user.json`: dữ liệu tài khoản.
 - `data/`: server root thực tế trong `main_server.py`.
@@ -288,3 +319,13 @@ Các test hiện được viết dưới dạng script dùng `assert`:
 python tests/test_checksum.py
 python tests/test_rdt_lossy.py
 ```
+
+## 9. Trạng thái đáp ứng và giới hạn kỹ thuật
+
+- Đã có phân tách TCP control/UDP data, native socket và RDT tự cài đặt.
+- Đã hỗ trợ ASCII/binary, cây thư mục, nhiều client bằng thread và Active/Passive cho cả hai hướng upload/download.
+- RDT có sequence number, ACK, checksum, retransmission, Go-Back-N và sliding window cố định.
+- SHA-256 có lệnh `HASH` và test dữ liệu, nhưng chưa tự động tích hợp so sánh hash trước/sau vào workflow transfer của client.
+- Chưa có congestion control thích nghi; cửa sổ hiện cố định ở 8 packet.
+- Chưa có tổng transfer deadline/retry budget, streaming file lớn hoặc khóa file giữa nhiều session.
+- Cổng UDP cấp động và chưa có NAT traversal/advertised public IP, vì vậy triển khai qua Internet cần bổ sung dải port cố định và port-forward. Trong LAN, client kết nối TCP bằng IP thật của server; `localhost` chỉ hợp lệ khi chạy cùng máy.

@@ -35,6 +35,24 @@ Client lưu file tải về tại `data/client_downloads/`. Khi upload, client �
 
 Tài khoản được đọc từ `server/auth/user.json`.
 
+### Chạy client và server trên hai máy
+
+Trong cùng mạng LAN, chạy server như trên rồi xác định địa chỉ IPv4 của máy server, ví dụ `192.168.1.10`. Trên máy client, kết nối bằng địa chỉ đó, không dùng `localhost`:
+
+```bash
+python -m client.main_client --host 192.168.1.10 --port 2121
+```
+
+Các điều kiện mạng cần đáp ứng:
+
+- firewall máy server cho phép TCP `2121` cho control channel;
+- firewall hai máy cho phép UDP vì data channel dùng RDT trên UDP;
+- passive mode yêu cầu client truy cập được cổng UDP động do server mở;
+- active mode yêu cầu server truy cập được cổng UDP động do client mở;
+- địa chỉ loopback `127.0.0.1`/`localhost` chỉ dùng khi hai tiến trình chạy trên cùng máy.
+
+Trong mạng LAN, server lấy IP active của client từ TCP peer và lệnh `PORT` chỉ truyền số cổng. Khi hai máy ở sau các NAT/router khác nhau, cấu hình hiện tại chưa phù hợp để chạy trực tiếp qua Internet: dự án chưa có dải passive UDP port cố định, advertised public IP hoặc cơ chế NAT traversal. Khi đó cần cấu hình firewall/port-forward cho TCP `2121` và một dải UDP cố định trước.
+
 ## Các lệnh được hỗ trợ
 
 | Nhóm | Lệnh |
@@ -57,10 +75,12 @@ Tài khoản được đọc từ `server/auth/user.json`.
 - `PORT <port>`: chọn active UDP và cung cấp cổng UDP của client.
 - `PASV`: server mở một UDP socket và trả `UDP_PORT=<port>`.
 
-Giới hạn hiện tại:
+Trạng thái hiện tại:
 
-- Download (`RETR`) và `LIST` hỗ trợ active hoặc passive mode.
-- Upload (`STOR`, `STOU`, `APPE`) hiện chỉ hỗ trợ passive mode.
+- Download (`RETR`, `LIST`) và upload (`STOR`, `STOU`, `APPE`) đều hỗ trợ active hoặc passive mode.
+- Trong active upload, server tạo UDP receive socket, gửi `SYN` đến endpoint do client đăng ký và chỉ nhận dữ liệu sau khi nhận `SYN|ACK` hợp lệ.
+- Mỗi TCP session chỉ có tối đa một file transfer đang chạy. Server vẫn phục vụ nhiều client đồng thời bằng một thread control cho mỗi connection và một worker cho transfer của session đó.
+- Trong khi transfer đang chạy, chỉ `ABOR`, `NOOP`, `STAT` và `QUIT` được chấp nhận; các command khác nhận `503`.
 - Data channel là UDP/RDT, vì vậy cú pháp `PORT` và reply `PASV` là biến thể của dự án, không phải cú pháp địa chỉ sáu số của FTP chuẩn.
 
 Ví dụ một phiên:
@@ -76,7 +96,17 @@ RETR example.bin
 QUIT
 ```
 
-Mỗi lệnh truyền dữ liệu trả reply sơ bộ `125`/`150`, thực hiện truyền qua UDP/RDT, rồi trả reply hoàn tất `226` hoặc reply lỗi. `HELP` sử dụng FTP multiline reply (`214-...` đến `214 End`).
+Mỗi lệnh truyền dữ liệu trả reply sơ bộ `125`/`150`; worker thực hiện truyền qua UDP/RDT rồi tự gửi reply hoàn tất `226` hoặc reply lỗi `426` trên control connection. Control thread quay lại `recv()` ngay sau reply sơ bộ để có thể nhận các command được phép trong lúc truyền. `HELP` sử dụng FTP multiline reply (`214-...` đến `214 End`).
+
+### Hạn chế đã biết
+
+- Client CLI hiện xử lý transfer đồng bộ, nên khó nhập `ABOR` tương tác từ chính cửa sổ client trong lúc handler đang chờ transfer; server đã có cancellation nhưng client cần tách luồng nhập/control để khai thác đầy đủ.
+- Luồng reply của `ABOR` chưa được đồng bộ hoàn chỉnh: handler xác nhận command còn worker phát reply hủy transfer, nên cần thống nhất ownership/thứ tự reply.
+- RDT dùng cửa sổ cố định và chưa có tổng deadline/số lần retry tối đa cho toàn bộ transfer.
+- Upload/download hiện có thể nạp toàn bộ payload vào RAM, chưa tối ưu cho file lớn.
+- Lệnh `HASH` hỗ trợ SHA-256 nhưng client chưa tự động so sánh hash trước và sau mọi transfer.
+- Chưa có khóa theo file; hai session khác nhau có thể thao tác cùng một đường dẫn.
+- Cổng UDP passive/active được cấp động, chưa có cấu hình dải port dành cho triển khai qua NAT.
 
 ## Cấu trúc dự án
 
@@ -143,5 +173,7 @@ python tests/test_rdt_lossy.py
 
 Các test hiện là script dùng `assert`, không phải `unittest.TestCase`.
 `test_rdt_lossy.py` kiểm tra RDT trong môi trường UDP giả lập mất gói và có tạo file mẫu trong `tests/`.
+
+Các flow Active Upload, lọc UDP peer và cleanup/cancellation đã được kiểm tra thêm bằng các bài kiểm tra tích hợp thủ công; hiện chưa được đóng gói đầy đủ thành test suite tự động trong repository.
 
 Chi tiết thiết kế và flow nằm trong [ARCHITECTURE.md](ARCHITECTURE.md).
