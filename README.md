@@ -37,7 +37,33 @@ Tài khoản được đọc từ `server/auth/user.json`.
 
 ### Chạy client và server trên hai máy
 
-Trong cùng mạng LAN, chạy server như trên rồi xác định địa chỉ IPv4 của máy server, ví dụ `192.168.1.10`. Trên máy client, kết nối bằng địa chỉ đó, không dùng `localhost`:
+Hai máy cần kết nối vào cùng một mạng LAN. Trên máy server, xác định địa chỉ IPv4 bằng lệnh:
+
+```powershell
+ipconfig
+```
+
+Ví dụ, địa chỉ IPv4 của máy server là `192.168.1.10`. Tiếp theo, cấu hình firewall để cho phép TCP `2121` cho control channel và UDP cho data channel. Cách cấu hình chi tiết tùy thuộc vào hệ điều hành.
+
+Trên Windows 11, mở PowerShell bằng quyền Administrator và chạy:
+
+```powershell
+New-NetFirewallRule -DisplayName "Hybrid FTP TCP 2121" -Direction Inbound -Protocol TCP -LocalPort 2121 -Action Allow
+New-NetFirewallRule -DisplayName "Hybrid FTP UDP" -Direction Inbound -Protocol UDP -Action Allow
+```
+
+Sau đó, khởi chạy server:
+
+```bash
+python -m server.main_server
+```
+
+Trên máy client, nếu muốn dùng Active Mode, máy client cũng phải cho phép UDP inbound:
+```powershell
+New-NetFirewallRule -DisplayName "Hybrid FTP UDP" -Direction Inbound -Protocol UDP -Action Allow
+```
+
+Kết nối bằng địa chỉ IPv4 của máy server, không dùng `localhost`:
 
 ```bash
 python -m client.main_client --host 192.168.1.10 --port 2121
