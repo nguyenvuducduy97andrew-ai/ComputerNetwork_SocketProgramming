@@ -84,18 +84,24 @@ def run_server(host: str = '0.0.0.0', port: int = 2121) -> None:
         srv.bind((host, port))
         print(f"Server root directory: {server_root.resolve()}")
         srv.listen(5)
+        srv.settimeout(0.5)  # Set timeout for accept to allow graceful shutdown
         print("Press Ctrl+C to stop the server.")
 
-        try:
-            while True:
+       
+        while True:
+            try:
                 conn, addr = srv.accept()
-                print(f"Received connection from {addr[0]}:{addr[1]}")
-                thread = threading.Thread(target=handle_client, args=(conn, addr, server_root), daemon=True)
-                thread.start()
-                print(f"Started thread {thread.name} for {addr[0]}:{addr[1]}")
-        except KeyboardInterrupt: #Shutdown server on Ctrl+C
-            print("Shutting down server...")
+            except socket.timeout:
+                continue  # Continue to check for shutdown signal
+            print(f"Received connection from {addr[0]}:{addr[1]}")
+            thread = threading.Thread(target=handle_client, args=(conn, addr, server_root), daemon=True)
+            thread.start()
+            print(f"Started thread {thread.name} for {addr[0]}:{addr[1]}")
+        
 
 
 if __name__ == '__main__':
-    run_server()
+    try:
+        run_server()
+    except KeyboardInterrupt:
+        print("\nShutting down server...")

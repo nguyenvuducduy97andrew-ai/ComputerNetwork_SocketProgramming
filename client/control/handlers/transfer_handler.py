@@ -15,7 +15,7 @@ from client.control.data_transfer_service import (
 )
 from client.control.handlers.common import send_and_print
 from client.control.context import ClientContext
-from shared.checksum import verify_checksum
+from shared.checksum import verify_checksum, compute_file_hash
 from shared.constants import BUFFER_SIZE, FLAG_ACK, FLAG_SYN, HEADER_SIZE
 from shared.packet_struct import pack_packet, unpack_packet
 from shared.rdt_core import reliable_recv, reliable_send
@@ -218,6 +218,16 @@ def handle_retr(control: ControlConnection, session: ClientContext, args: str | 
 
     response = control.read_reply_line()
     print(response)
+    local_hash = compute_file_hash(download_path)
+    control.send_command(f"HASH {filename}")
+    hash_response = control.read_reply_line()
+    code, message = parse_reply(hash_response)
+    if code == 200:
+        server_hash = message.split()[-1]
+        if local_hash == server_hash:
+            print(f"File {filename} downloaded successfully and verified with local hash: {local_hash}, server hash: {server_hash}.")
+        else:
+            print(f"File {filename} downloaded but hash mismatch: local {local_hash}, server {server_hash}.")
     return True
 
 
