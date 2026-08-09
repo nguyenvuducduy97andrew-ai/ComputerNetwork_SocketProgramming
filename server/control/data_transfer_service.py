@@ -234,9 +234,16 @@ def _resolve_receive_channel(
                 "Passive UDP socket is not available. Use PASV before transferring data."
             )
         
-        client_address = session.passive_client_address
-        if client_address is None:
-            client_address = _discover_passive_client(session)
+        # The socket is already active while waiting for the passive SYN. Register
+        # it before the blocking discovery call so ABOR/cleanup can close it.
+        session.register_data_socket(udp_socket)
+        try:
+            client_address = session.passive_client_address
+            if client_address is None:
+                client_address = _discover_passive_client(session)
+        except BaseException:
+            session.unregister_data_socket(udp_socket)
+            raise
         
         if session.passive_udp_socket is None:
             raise DataTransferError("Passive UDP socket is not available. Use PASV before transferring data.")
@@ -367,7 +374,6 @@ def receive_file(session: ClientSession, save_file_path: Path, append: bool = Fa
     udp_socket, expected_peer, should_close = _resolve_receive_channel(session)
 
     try:
-        session.register_data_socket(udp_socket)
         transfer_type = _get_transfer_type(session)
         transfer_mode = _get_transfer_mode(session)
         print(f"[DataTransferService] Receiving file. Transfer type: {transfer_type}, Transfer mode: {transfer_mode}")

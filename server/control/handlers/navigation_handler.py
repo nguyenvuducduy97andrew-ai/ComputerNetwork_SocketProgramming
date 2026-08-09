@@ -197,8 +197,7 @@ def handle_list(session: ClientSession, args: str | None) -> CommandReplies:
             return FTPReplyCode.TRANSFER_ABORTED.format(str(e))
         except OSError:
             return FTPReplyCode.FILE_UNAVAILABLE.format("Failed to send directory listing.")
-        finally:
-            session.finish_transfer()
+
         return FTPReplyCode.TRANSFER_COMPLETE.format(f"Directory listing sent. BYTES={len(listing_data)}")
     session.run_transfer(worker)
 

@@ -2,7 +2,20 @@ import socket
 import os
 import threading
 import time
-from .constants import (HEADER_SIZE, MAX_PAYLOAD, BUFFER_SIZE, TIMEOUT, FLAG_DATA, FLAG_ACK, FLAG_FIN, WINDOW_SIZE, DUP_ACK_THRESHOLD, FLAG_SYN)
+from .constants import (
+    HEADER_SIZE,
+    MAX_PAYLOAD,
+    BUFFER_SIZE,
+    TIMEOUT,
+    FLAG_DATA,
+    FLAG_ACK,
+    FLAG_FIN,
+    WINDOW_SIZE,
+    DUP_ACK_THRESHOLD,
+    FLAG_SYN,
+    FIN_MAX_RETRIES,
+    FIN_LINGER_TIMEOUT,
+)
 from .packet_struct import pack_packet, unpack_packet
 from .checksum import verify_checksum
 from typing import Any, Callable, Optional
@@ -10,6 +23,10 @@ from typing import Any, Callable, Optional
 
 
 ProgressCallback = Callable[[int, int], None] #Mục đích: callback để báo tiến trình truyền dữ liệu (số byte đã gửi/nhận, tổng số byte)
+
+
+class RDTTeardownTimeout(TimeoutError):
+    """Raised when the peer never confirms the FIN handshake."""
 
 
 def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
@@ -28,13 +45,60 @@ def _normalize_peer_address(address: tuple[str, int]) -> tuple[str, int]:
     return host, port
 
 
+def _is_valid_fin_packet(packet: dict, expected_seq: int) -> bool:
+    """Validate a payload-free FIN for the expected end-of-stream sequence."""
+    return (
+        packet["flags"] == FLAG_FIN
+        and packet["seq"] == expected_seq
+        and packet["length"] == 0
+        and packet["payload"] == b""
+    )
+
+
+def _linger_after_fin(
+    udp_socket: Any,
+    sender_addr: tuple[str, int],
+    expected_seq: int,
+    ack_fin: bytes,
+    cancel_event: threading.Event | None,
+) -> None:
+    """Re-ACK duplicate FIN packets so a lost FIN-ACK does not strand the sender."""
+    linger_deadline = time.monotonic() + FIN_LINGER_TIMEOUT
+
+    while True:
+        _raise_if_cancelled(cancel_event)
+        remaining = linger_deadline - time.monotonic()
+        if remaining <= 0:
+            return
+
+        udp_socket.settimeout(min(TIMEOUT, remaining))
+        try:
+            packet_bytes, duplicate_sender = udp_socket.recvfrom(BUFFER_SIZE)
+        except socket.timeout:
+            continue
+
+        if duplicate_sender != sender_addr:
+            continue
+        if len(packet_bytes) < HEADER_SIZE or not verify_checksum(packet_bytes):
+            continue
+
+        try:
+            packet = unpack_packet(packet_bytes)
+        except ValueError:
+            continue
+
+        if _is_valid_fin_packet(packet, expected_seq):
+            udp_socket.sendto(ack_fin, sender_addr)
+            linger_deadline = time.monotonic() + FIN_LINGER_TIMEOUT
+
+
 def reliable_send(
     udp_socket: Any,
     dest_addr: tuple,
     data_or_file_path,
     progress_callback: ProgressCallback | None = None,
     cancel_event: threading.Event | None = None,
-):
+) -> None:
     # API gửi file/dữ liệu tin cậy qua UDP sử dụng cơ chế Fast Retransmit (3 Duplicate ACKs) và thuật toán Sliding Window (Go-Back-N)
 
     _raise_if_cancelled(cancel_event)
@@ -68,7 +132,7 @@ def reliable_send(
     next_seq_num = 0
     dup_ack_count = 0
     last_ack_received = -1
-    timer_start = 0
+    timer_start = 0.0
 
     udp_socket.settimeout(0.01)  # Non-blocking polling cho việc nhận ACK liên tục
 
@@ -79,7 +143,7 @@ def reliable_send(
             _raise_if_cancelled(cancel_event)
             udp_socket.sendto(packets[next_seq_num], dest_addr)
             if base == next_seq_num:
-                timer_start = time.time()  # Bật Timer cho gói tin nhỏ nhất chưa ACK
+                timer_start = time.monotonic()  # Bật Timer cho gói tin nhỏ nhất chưa ACK
             next_seq_num += 1
 
         # Lắng nghe ACK phản hồi từ phía Nhận
@@ -106,36 +170,48 @@ def reliable_send(
                             )
                         dup_ack_count = 0
                         if base < next_seq_num:
-                            timer_start = time.time()  # Reset timer cho gói chưa ACK tiếp theo
+                            timer_start = time.monotonic()  # Reset timer cho gói chưa ACK tiếp theo
                     elif ack_num == base:
                         # Nhận ACK trùng lặp (Duplicate ACK)
                         dup_ack_count += 1
                         if dup_ack_count == DUP_ACK_THRESHOLD:
                             # FAST RETRANSMIT: Gửi lại ngay lập tức gói 'base' bị mất
                             udp_socket.sendto(packets[base], dest_addr)
-                            timer_start = time.time()
+                            timer_start = time.monotonic()
                             dup_ack_count = 0
         except socket.timeout:
             _raise_if_cancelled(cancel_event)
 
         # Kiểm tra Timeout (RTO) -> Truyền lại toàn bộ gói trong cửa sổ hiện tại (Go-Back-N)
-        if base < next_seq_num and (time.time() - timer_start) > TIMEOUT:
+        if base < next_seq_num and (time.monotonic() - timer_start) > TIMEOUT:
             for i in range(base, next_seq_num):
                 _raise_if_cancelled(cancel_event)
                 udp_socket.sendto(packets[i], dest_addr)
-            timer_start = time.time()
+            timer_start = time.monotonic()
 
     if progress_callback is not None:
         progress_callback(total_bytes, total_bytes)
 
     # Bắt tay kết thúc truyền dữ liệu (FIN Handshake)
     fin_packet = pack_packet(seq = total_packets, ack = 0, flags = FLAG_FIN)
-    udp_socket.settimeout(TIMEOUT)
-    while True:
+    for _ in range(FIN_MAX_RETRIES):
         _raise_if_cancelled(cancel_event)
-        try:
-            udp_socket.sendto(fin_packet, dest_addr)
-            resp, sender_addr = udp_socket.recvfrom(BUFFER_SIZE)
+        udp_socket.sendto(fin_packet, dest_addr)
+        attempt_deadline = time.monotonic() + TIMEOUT
+
+        while True:
+            _raise_if_cancelled(cancel_event)
+            remaining = attempt_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            udp_socket.settimeout(remaining)
+            try:
+                resp, sender_addr = udp_socket.recvfrom(BUFFER_SIZE)
+            except socket.timeout:
+                _raise_if_cancelled(cancel_event)
+                break
+
             if sender_addr != expected_peer:
                 continue
             if len(resp) < HEADER_SIZE:
@@ -145,14 +221,18 @@ def reliable_send(
                     unpacked = unpack_packet(resp)
                 except ValueError:
                     continue
-                if (unpacked['flags'] == FLAG_FIN
+                if (
+                    unpacked['flags'] == FLAG_FIN
                     and unpacked['ack'] == total_packets
                     and unpacked['seq'] == 0
                     and unpacked['payload'] == b""
-                    and unpacked['length'] == 0):
-                    break
-        except socket.timeout:
-            _raise_if_cancelled(cancel_event)
+                    and unpacked['length'] == 0
+                ):
+                    return
+
+    raise RDTTeardownTimeout(
+        f"FIN handshake failed after {FIN_MAX_RETRIES} attempts."
+    )
 
 def reliable_recv(
     udp_socket: socket.socket,
@@ -202,17 +282,24 @@ def reliable_recv(
             
             # Xử lý gói FIN
             if flags == FLAG_FIN:
-                if (unpacked["length"] != 0 or unpacked["payload"] != b"" or unpacked["seq"] != expected_seq):
+                if unpacked["length"] != 0 or unpacked["payload"] != b"":
                     continue  # Gói FIN không hợp lệ
 
                 if seq != expected_seq:
-                    # Gửi lại ACK của gói kỳ vọng gần nhất
+                    # FIN đến sớm: báo lại sequence mà receiver vẫn đang chờ.
                     ack_packet = pack_packet(seq = 0, ack = expected_seq, flags = FLAG_ACK)
                     udp_socket.sendto(ack_packet, sender_addr)
                     continue
                 ack_fin = pack_packet(seq = 0, ack = seq, flags = FLAG_FIN)
                 udp_socket.sendto(ack_fin, sender_addr)
-                break  # Kết thúc vòng lặp nhận dữ liệu
+                _linger_after_fin(
+                    udp_socket,
+                    sender_addr,
+                    expected_seq,
+                    ack_fin,
+                    cancel_event,
+                )
+                break  # Kết thúc sau khi đã cho phép sender gửi lại FIN.
     
             # Xử lý gói DATA
             if flags == FLAG_DATA:

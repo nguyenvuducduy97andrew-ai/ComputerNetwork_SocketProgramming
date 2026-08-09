@@ -106,7 +106,6 @@ Hai khái niệm khác nhau cần được giữ riêng:
 
 `QUIT` dùng `close_control=True`. Các handler `RETR`, `STOR`, `STOU` và `APPE` dùng generator chỉ để phát reply sơ bộ `125`/`150`, sau đó khởi động worker và kết thúc generator để control thread quay lại `recv()` ngay. Reply cuối `226`/`426` do worker gửi qua `ClientSession.control_conn`. `conn_send_lock` ngăn control thread và worker ghi xen byte lên TCP socket, nhưng không tự giải quyết thứ tự logic giữa hai reply độc lập.
 
-`LIST` hiện vẫn thực hiện data transfer đồng bộ trong control flow, chưa dùng cùng worker lifecycle với các lệnh truyền file.
 
 ## 3. Trạng thái phiên
 

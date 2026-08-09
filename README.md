@@ -182,8 +182,10 @@ Mỗi lệnh truyền dữ liệu trả reply sơ bộ `125`/`150`; worker thự
 │   ├── test_checksum.py
 │   ├── test_rdt_lossy.py
 │   ├── test_active_upload.py
+│   ├── test_rdt_fin_handshake.py
 │   ├── test_rdt_peer_filtering.py
-│   └── test_transfer_cancellation_cleanup.py
+│   ├── test_transfer_cancellation_cleanup.py
+│   └── test_upload_completion.py
 ├── docs/
 └── report/
 ```
@@ -192,16 +194,27 @@ Lưu ý: mặc dù repository có `data/server_storage/`, implementation hiện 
 
 ## Kiểm thử
 
+Chạy từ thư mục gốc của repository. Lệnh đầy đủ được khuyến nghị:
+
 ```bash
 python tests/test_checksum.py
 python tests/test_rdt_lossy.py
-python tests/test_active_upload.py
-python tests/test_rdt_peer_filtering.py
-python tests/test_transfer_cancellation_cleanup.py
+python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Mỗi lệnh trên chạy một nhóm kiểm thử độc lập, đều hỗ trợ chạy trực tiếp bằng cú pháp `python tests/<tên_file>.py`.
-`test_rdt_lossy.py` kiểm tra RDT trong môi trường UDP giả lập mất gói và có tạo file mẫu tạm trong `tests/`.
+Hai file đầu là các bài kiểm tra chạy độc lập. Lệnh `unittest discover` chạy toàn bộ test case dựa trên `unittest`, hiện gồm kiểm tra active upload, FIN handshake, lọc UDP peer, cancellation/cleanup và xác nhận upload qua TCP.
+
+Có thể chạy riêng từng nhóm để chẩn đoán:
+
+```bash
+python -m unittest -v tests.test_active_upload
+python -m unittest -v tests.test_rdt_fin_handshake
+python -m unittest -v tests.test_rdt_peer_filtering
+python -m unittest -v tests.test_transfer_cancellation_cleanup
+python -m unittest -v tests.test_upload_completion
+```
+
+`test_rdt_lossy.py` mô phỏng mất ngẫu nhiên 20% packet và tạo rồi xóa hai file nhị phân tạm trong `tests/`. `test_rdt_fin_handshake.py` kiểm tra mất FIN-ACK, retry exhaustion và FIN đến sớm; `test_upload_completion.py` kiểm tra TCP `226`/`426` sau khi UDP teardown hết hạn.
 
 
 Chi tiết thiết kế và flow nằm trong [ARCHITECTURE.md](ARCHITECTURE.md).

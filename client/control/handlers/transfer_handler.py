@@ -18,7 +18,7 @@ from client.control.context import ClientContext
 from shared.checksum import verify_checksum, compute_file_hash
 from shared.constants import BUFFER_SIZE, FLAG_ACK, FLAG_SYN, HEADER_SIZE
 from shared.packet_struct import pack_packet, unpack_packet
-from shared.rdt_core import reliable_recv, reliable_send
+from shared.rdt_core import RDTTeardownTimeout, reliable_recv, reliable_send
 
 
 TRANSFER_SIZE_PATTERN = re.compile(r"\bBYTES=(\d+)\b", re.IGNORECASE)
@@ -206,6 +206,40 @@ def _read_preliminary_reply(
     return code in {125, 150}, message
 
 
+def _send_upload_and_wait_for_completion(
+    control: ControlConnection,
+    data_socket: socket.socket,
+    peer_address: tuple[str, int],
+    upload_data: bytes,
+) -> bool:
+    """Send bytes and use the reliable TCP reply as the final verdict."""
+    teardown_error: RDTTeardownTimeout | None = None
+
+    try:
+        reliable_send(
+            data_socket,
+            peer_address,
+            upload_data,
+            progress_callback=make_progress_callback("Upload"),
+        )
+    except RDTTeardownTimeout as error:
+        teardown_error = error
+        print(f"UDP teardown was not acknowledged: {error}")
+
+    response = control.read_reply_line()
+    print(response)
+    code, _ = parse_reply(response)
+
+    if code == 226:
+        if teardown_error is not None:
+            print("The server confirmed completion through the TCP control channel.")
+        return True
+
+    if teardown_error is not None:
+        print("The transfer could not be confirmed through either channel.")
+    return False
+
+
 def _resolve_local_download_path(filename: str) -> Path:
     return Path("data") / "client_downloads" / filename
 
@@ -325,16 +359,15 @@ def handle_stor(control: ControlConnection, session: ClientContext, args: str | 
         _report_upload_channel_failure(control, error)
         return True
 
-    reliable_send(
-        data_socket,
-        peer_address,
-        upload_data,
-        progress_callback=make_progress_callback("Upload"),
-    )
-
-    response = control.read_reply_line()
-    print(response)
-    local_hash = compute_file_hash(upload_path)
+    if not _send_upload_and_wait_for_completion(
+        control, data_socket, peer_address, upload_data
+    ):
+        return True
+    try:
+        local_hash = compute_file_hash(upload_path)
+    except OSError as error:
+        print(f"Could not compute hash for uploaded file: {error}")
+        return True
     control.send_command(f"HASH {filename}")
     hash_response = control.read_reply_line()
     code, message = parse_reply(hash_response)
@@ -388,16 +421,15 @@ def handle_stou(control: ControlConnection, session: ClientContext, args: str | 
         _report_upload_channel_failure(control, error)
         return True
 
-    reliable_send(
-        data_socket,
-        peer_address,
-        upload_data,
-        progress_callback=make_progress_callback("Upload"),
-    )
-
-    response = control.read_reply_line()
-    print(response)
-    local_hash = compute_file_hash(upload_path)
+    if not _send_upload_and_wait_for_completion(
+        control, data_socket, peer_address, upload_data
+    ):
+        return True
+    try:
+        local_hash = compute_file_hash(upload_path)
+    except OSError as error:
+        print(f"Could not compute hash for uploaded file: {error}")
+        return True
     control.send_command(f"HASH {filename}")
     hash_response = control.read_reply_line()
     code, message = parse_reply(hash_response)
@@ -451,16 +483,15 @@ def handle_appe(control: ControlConnection, session: ClientContext, args: str | 
         _report_upload_channel_failure(control, error)
         return True
 
-    reliable_send(
-        data_socket,
-        peer_address,
-        upload_data,
-        progress_callback=make_progress_callback("Upload"),
-    )
-
-    response = control.read_reply_line()
-    print(response)
-    local_hash = compute_file_hash(upload_path)
+    if not _send_upload_and_wait_for_completion(
+        control, data_socket, peer_address, upload_data
+    ):
+        return True
+    try:
+        local_hash = compute_file_hash(upload_path)
+    except OSError as error:
+        print(f"Could not compute hash for uploaded file: {error}")
+        return True
     control.send_command(f"HASH {filename}")
     hash_response = control.read_reply_line()
     code, message = parse_reply(hash_response)

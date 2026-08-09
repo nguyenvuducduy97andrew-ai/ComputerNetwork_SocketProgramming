@@ -9,6 +9,8 @@ BUFFER_SIZE = HEADER_SIZE + MAX_PAYLOAD # Kích thước vùng đệm nhận UDP
 TIMEOUT = 0.3 # RTO (Retransmission Timeout) = 0.3s
 WINDOW_SIZE = 8 # Kích thước cửa sổ trượt N = 8 packets
 DUP_ACK_THRESHOLD = 3 # Ngưỡng 3 Duplicate ACKs để kích hoạt Fast Retransmit
+FIN_MAX_RETRIES = 10 # Giới hạn số lần gửi FIN để teardown không chờ vô hạn
+FIN_LINGER_TIMEOUT = TIMEOUT * 2 # Receiver tiếp tục re-ACK FIN trùng trong khoảng thời gian này
 
 # ----Cờ điều khiển (FLAGS - Bitwise 1 byte)
 FLAG_SYN = 0b00000001 # Bit 0: Khởi tạo kết nối RDT
