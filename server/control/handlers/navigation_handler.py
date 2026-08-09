@@ -6,6 +6,12 @@ from server.control.data_transfer_service import (
     send_data,
     validate_data_connection,
 )
+from server.control.filesystem_service import (
+    SessionPathError,
+    require_directory,
+    require_file,
+    resolve_session_path,
+)
 
 from pathlib import Path
 from datetime import datetime, timezone
@@ -47,31 +53,6 @@ def format_list_entry(entry: Path) -> str:
         f"{entry.name}"
     )
 
-def resolve_session_path(session: ClientSession, user_path: str,) -> Path | None:
-    server_root = session.server_root.resolve()
-    candidate = (session.get_absolute_current_directory() / user_path).resolve()
-
-    try:
-        candidate.relative_to(server_root)
-    except ValueError:
-        return None
-
-    return candidate
-
-#Hàm validate_directory kiểm tra xem thư mục được chỉ định có tồn tại và có quyền truy cập hay không.
-#Nó cũng đảm bảo rằng thư mục đó nằm trong thư mục gốc của máy chủ (server_root) để ngăn chặn truy cập trái phép.
-def validate_directory(session: ClientSession, directory: str) -> bool:
-    new_directory = resolve_session_path(session, directory)
-
-    # Kiểm tra xem new_directory có tồn tại và là một thư mục không
-    if new_directory is None or not new_directory.exists() or not new_directory.is_dir():
-        return False
-
-    print(f"[navigation_handler] Validated directory: {new_directory}")
-    return new_directory.exists() and new_directory.is_dir()
-
-
-
 def handle_pwd(session: ClientSession) -> str:
     print(f"[navigation_handler] Handling PWD command. Current directory: {session.get_display_current_directory()}")
     current_directory = session.get_display_current_directory()
@@ -82,9 +63,10 @@ def handle_cwd(session: ClientSession, args: str | None) -> str:
     if not args:
         return FTPReplyCode.INVALID_PARAMETER.format("Missing directory argument.")
 
-    if not validate_directory(session, args):
-        return FTPReplyCode.FILE_UNAVAILABLE.format("Directory does not exist or access denied.")
-    new_directory = (session.get_absolute_current_directory() / args).resolve()
+    try:
+        new_directory = require_directory(session, args)
+    except SessionPathError as exc:
+        return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
 
     # Cập nhật current_directory
     session.current_directory = new_directory.relative_to(session.server_root.resolve())
@@ -115,10 +97,10 @@ def handle_mkd(session: ClientSession, args: str | None) -> str:
     if not args:
         return FTPReplyCode.INVALID_PARAMETER.format("Missing directory name argument.")
 
-    new_directory = resolve_session_path(session, args)
-
-    if new_directory is None:
-        return FTPReplyCode.FILE_UNAVAILABLE.format("Access denied.")
+    try:
+        new_directory = resolve_session_path(session, args)
+    except SessionPathError as exc:
+        return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
 
     try:
         new_directory.mkdir(parents=True, exist_ok=False)
@@ -134,11 +116,10 @@ def handle_rmd(session: ClientSession, args: str | None) -> str:
     if not args:
         return FTPReplyCode.INVALID_PARAMETER.format("Missing directory name argument.")
 
-    target_directory = (session.get_absolute_current_directory() / args).resolve()
-
-    # Kiểm tra xem target_directory có tồn tại và là một thư mục không
-    if not validate_directory(session, args):
-        return FTPReplyCode.FILE_UNAVAILABLE.format("Directory does not exist or access denied.")
+    try:
+        target_directory = require_directory(session, args)
+    except SessionPathError as exc:
+        return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
 
     try:
         target_directory.rmdir()
@@ -154,13 +135,14 @@ def handle_rmd(session: ClientSession, args: str | None) -> str:
 def handle_list(session: ClientSession, args: str | None) -> CommandReplies:
     print(f"[navigation_handler] Handling LIST command for directory: {args!r}")
 
-    if args:
-        target_path = resolve_session_path(session, args)
-    else:
-        target_path = session.get_absolute_current_directory()
-
-    if target_path is None:
-        yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, "Access denied.")
+    try:
+        target_path = (
+            resolve_session_path(session, args)
+            if args
+            else session.get_absolute_current_directory()
+        )
+    except SessionPathError as exc:
+        yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, str(exc))
         return
 
     if not target_path.exists():
@@ -181,7 +163,7 @@ def handle_list(session: ClientSession, args: str | None) -> CommandReplies:
 
         listing = "\r\n".join(format_list_entry(entry) for entry in entries)
         listing_data = listing.encode("utf-8")
-        validate_data_connection(session, direction="SEND")
+        validate_data_connection(session)
     except DataTransferError as e:
         yield CommandReply(FTPReplyCode.CANNOT_OPEN_DATA_CONNECTION, str(e))
         return
@@ -205,12 +187,14 @@ def handle_list(session: ClientSession, args: str | None) -> CommandReplies:
 
 def handle_nlst(session: ClientSession, args: str | None) -> str:
     print(f"[navigation_handler] Handling NLST command for directory: {args!r}")
-    target_directory = session.get_absolute_current_directory()
-
-    if args:
-        target_directory = (target_directory / args).resolve()
-        if not validate_directory(session, args):
-            return FTPReplyCode.FILE_UNAVAILABLE.format("Directory does not exist or access denied.")
+    try:
+        target_directory = (
+            require_directory(session, args)
+            if args
+            else session.get_absolute_current_directory()
+        )
+    except SessionPathError as exc:
+        return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
 
     try:
         entries = list(target_directory.iterdir())
@@ -222,12 +206,14 @@ def handle_nlst(session: ClientSession, args: str | None) -> str:
 
 def handle_stat(session: ClientSession, args: str | None) -> str:
     print(f"[navigation_handler] Handling STAT command for directory: {args!r}")
-    target_directory = session.get_absolute_current_directory()
-
-    if args:
-        target_directory = (target_directory / args).resolve()
-        if not validate_directory(session, args):
-            return FTPReplyCode.FILE_UNAVAILABLE.format("Directory does not exist or access denied.")
+    try:
+        target_directory = (
+            require_directory(session, args)
+            if args
+            else session.get_absolute_current_directory()
+        )
+    except SessionPathError as exc:
+        return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
 
     try:
         entries = list(target_directory.iterdir())
@@ -243,11 +229,10 @@ def handle_size(session: ClientSession, args: str | None) -> str:
     if not args:
         return FTPReplyCode.INVALID_PARAMETER.format("Missing filename argument.")
 
-    target_file = resolve_session_path(session, args)
-
-    # Kiểm tra xem target_file có tồn tại và là một tệp không
-    if target_file is None or not target_file.exists() or not target_file.is_file():
-        return FTPReplyCode.FILE_UNAVAILABLE.format("File does not exist or access denied.")
+    try:
+        target_file = require_file(session, args)
+    except SessionPathError as exc:
+        return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
 
     try:
         size = target_file.stat().st_size
@@ -263,11 +248,10 @@ def handle_mdtm(session: ClientSession, args: str | None) -> str:
     if not args:
         return FTPReplyCode.INVALID_PARAMETER.format("Missing filename argument.")
 
-    target_file = resolve_session_path(session, args)
-
-    # Kiểm tra xem target_file có tồn tại và là một tệp không
-    if target_file is None or not target_file.exists() or not target_file.is_file():
-        return FTPReplyCode.FILE_UNAVAILABLE.format("File does not exist or access denied.")
+    try:
+        target_file = require_file(session, args)
+    except SessionPathError as exc:
+        return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
 
     try:
         modified_at = datetime.fromtimestamp(

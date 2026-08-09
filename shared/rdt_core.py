@@ -30,7 +30,7 @@ class RDTTeardownTimeout(TimeoutError):
 
 
 def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
-    """Stop an RDT operation without allowing callers to treat it as success."""
+    """Stop an RDT operation."""
     if cancel_event is not None and cancel_event.is_set():
         raise InterruptedError("Transfer aborted.")
 
@@ -62,7 +62,7 @@ def _linger_after_fin(
     ack_fin: bytes,
     cancel_event: threading.Event | None,
 ) -> None:
-    """Re-ACK duplicate FIN packets so a lost FIN-ACK does not strand the sender."""
+    """Acknowledge lại các packet FIN bị mất để tránh việc sender bị kẹt."""
     linger_deadline = time.monotonic() + FIN_LINGER_TIMEOUT
 
     while True:

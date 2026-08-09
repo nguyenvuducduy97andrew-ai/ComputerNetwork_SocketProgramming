@@ -181,14 +181,13 @@ Chọn lại `PORT` hoặc `PASV` gọi reset trước, nhờ đó socket và đ
 
 `client/control/data_transfer_service.py` xử lý dữ liệu trước upload và sau download.
 
-`server/control/data_transfer_service.py`:
+Data plane phía server được chia thành ba lớp:
 
-- kiểm tra data channel theo hướng `SEND`/`RECEIVE`;
-- resolve socket và peer address cho active/passive;
-- gọi `reliable_send()` hoặc `reliable_recv()`;
-- truyền `cancel_event` xuống RDT và kiểm tra đúng UDP peer;
-- áp dụng TYPE/MODE;
-- hỗ trợ ghi đè hoặc append file.
+- `server/control/data_channel.py` kiểm tra cấu hình Active/Passive, thực hiện handshake, resolve UDP peer và quản lý register/unregister/close socket bằng context manager.
+- `server/control/transfer_codec.py` là lớp biến đổi thuần bytes cho `TYPE A/I` và `MODE S/B/C`; lớp này không phụ thuộc socket hay session lifecycle.
+- `server/control/data_transfer_service.py` là facade điều phối: đọc/ghi file, gọi codec và gọi `reliable_send()`/`reliable_recv()` với `cancel_event` cùng peer đã được data channel xác định.
+
+Handlers tiếp tục chỉ import facade, vì vậy chi tiết socket và codec không lan lên command layer.
 
 Ý nghĩa cấu hình hiện tại:
 

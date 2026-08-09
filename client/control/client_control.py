@@ -42,10 +42,10 @@ class ControlConnection:
         """Read the initial service-ready reply."""
         return self.read_reply_line()
 
-    def send_simple_command(self, command: str) -> str:
-        """Send a command that is expected to return one reply."""
-        self.send_command(command)
-        return self.read_reply_line()
+    # def send_simple_command(self, command: str) -> str:
+    #     """Send a command that is expected to return one reply."""
+    #     self.send_command(command)
+    #     return self.read_reply_line()
 
     def send_command_and_receive_multiline_response(self, command: str) -> list[str]:
         """Send a command and read a multi-line response."""
@@ -80,6 +80,6 @@ def parse_reply(response: str) -> tuple[int | None, str]:
     return code, message
 
 
-def parse_ftp_response(response: str) -> tuple[int | None, str]:
-    """Backward-compatible alias for older client code."""
-    return parse_reply(response)
+# def parse_ftp_response(response: str) -> tuple[int | None, str]:
+#     """Backward-compatible alias for older client code."""
+#     return parse_reply(response)

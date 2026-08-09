@@ -1,5 +1,6 @@
 from pathlib import Path
 from time import time
+from collections.abc import Callable
 
 from server.control.command_result import CommandReplies, CommandReply
 from server.control.data_transfer_service import (
@@ -10,18 +11,40 @@ from server.control.data_transfer_service import (
     validate_data_connection,
 )
 from server.control.ftp_codes import FTPReplyCode
+from server.control.filesystem_service import (
+    SessionPathError,
+    require_file,
+    resolve_session_path,
+)
 from server.control.session import ClientSession
 
 
-def _resolve_safe_path(session: ClientSession, filename: str) -> Path | None:
-    server_root = session.server_root.resolve()
-    file_path = (session.get_absolute_current_directory() / filename).resolve()
-
+def _start_receive_transfer(
+    session: ClientSession,
+    *,
+    command: str,
+    file_path: Path,
+    append: bool,
+    preliminary_message: str,
+    completion_message: Callable[[int], str],
+) -> CommandReplies:
+    """Xác nhận kênh dữ liệu, gửi phản hồi ban đầu, và bắt đầu nhận dữ liệu từ client. Trả về các phản hồi FTP tương ứng."""
     try:
-        file_path.relative_to(server_root)
-        return file_path
-    except ValueError:
-        return None
+        validate_data_connection(session)
+    except DataTransferError as exc:
+        yield CommandReply(FTPReplyCode.CANNOT_OPEN_DATA_CONNECTION, str(exc))
+        return
+
+    yield CommandReply(FTPReplyCode.PRELIMINARY_OK, preliminary_message)
+    session.start_transfer(command, file_path, direction="UPLOAD")
+
+    def worker() -> str:
+        received_size = receive_file(session, file_path, append=append)
+        return FTPReplyCode.TRANSFER_COMPLETE.format(
+            completion_message(received_size)
+        )
+
+    session.run_transfer(worker)
 
 
 def handle_retr(session: ClientSession, args: str | None) -> CommandReplies:
@@ -31,27 +54,20 @@ def handle_retr(session: ClientSession, args: str | None) -> CommandReplies:
         yield CommandReply(FTPReplyCode.INVALID_PARAMETER, "Missing filename argument.")
         return
 
-    file_path = _resolve_safe_path(session, args)
-
-    if file_path is None:
-        yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, "Access denied.")
-        return
-
-    if not file_path.exists() or not file_path.is_file():
-        yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, "File does not exist.")
+    try:
+        file_path = require_file(session, args)
+    except SessionPathError as exc:
+        yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, str(exc))
         return
 
     try:
-        validate_data_connection(session, direction="SEND")
+        validate_data_connection(session)
         outgoing_data = prepare_outgoing_file_data(session, file_path)
     except DataTransferError as exc:
         yield CommandReply(FTPReplyCode.CANNOT_OPEN_DATA_CONNECTION, str(exc))
         return
     except OSError:
-        yield CommandReply(
-            FTPReplyCode.FILE_UNAVAILABLE,
-            "Failed to read the requested file.",
-        )
+        yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, "Failed to read the requested file.")
         return
 
     yield CommandReply(
@@ -81,64 +97,47 @@ def handle_stor(session: ClientSession, args: str | None) -> CommandReplies:
         yield CommandReply(FTPReplyCode.INVALID_PARAMETER, "Missing filename argument.")
         return
 
-    file_path = _resolve_safe_path(session, args)
-
-    if file_path is None:
-        yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, "Access denied.")
-        return
-
     try:
-        validate_data_connection(session, direction="RECEIVE")
-    except DataTransferError as exc:
-        yield CommandReply(FTPReplyCode.CANNOT_OPEN_DATA_CONNECTION, str(exc))
+        file_path = resolve_session_path(session, args)
+    except SessionPathError as exc:
+        yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, str(exc))
         return
 
-    yield CommandReply(
-        FTPReplyCode.PRELIMINARY_OK,
-        f"Ready to receive {file_path.name}.",
-    )
-
-    session.start_transfer("STOR", file_path, direction="UPLOAD")
-
-    def _worker() -> str:
-        received_size = receive_file(session, file_path, append=False)
-        return FTPReplyCode.TRANSFER_COMPLETE.format(
+    yield from _start_receive_transfer(
+        session,
+        command="STOR",
+        file_path=file_path,
+        append=False,
+        preliminary_message=f"Ready to receive {file_path.name}.",
+        completion_message=lambda received_size: (
             f"File {args} received successfully. {received_size} bytes stored."
-        )
-
-    session.run_transfer(_worker)
+        ),
+    )
 
 
 def handle_stou(session: ClientSession) -> CommandReplies:
     print("[transfer_handler] Handling STOU command.")
 
     unique_filename = f"file_{int(time())}.dat"
-    file_path = _resolve_safe_path(session, unique_filename)
-
-    if file_path is None:
-        yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, "Access denied.")
-        return
-
     try:
-        validate_data_connection(session, direction="RECEIVE")
-    except DataTransferError as exc:
-        yield CommandReply(FTPReplyCode.CANNOT_OPEN_DATA_CONNECTION, str(exc))
+        file_path = resolve_session_path(session, unique_filename)
+    except SessionPathError as exc:
+        yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, str(exc))
         return
 
-    yield CommandReply(
-        FTPReplyCode.PRELIMINARY_OK,
-        f"Ready to receive a uniquely named file as {unique_filename}.",
+    yield from _start_receive_transfer(
+        session,
+        command="STOU",
+        file_path=file_path,
+        append=False,
+        preliminary_message=(
+            f"Ready to receive a uniquely named file as {unique_filename}."
+        ),
+        completion_message=lambda received_size: (
+            f"File stored as {unique_filename} successfully. "
+            f"{received_size} bytes stored."
+        ),
     )
-
-    session.start_transfer("STOU", file_path, direction="UPLOAD")
-
-    def _worker() -> str:
-        received_size = receive_file(session, file_path, append=False)
-        return FTPReplyCode.TRANSFER_COMPLETE.format(
-            f"File stored as {unique_filename} successfully. {received_size} bytes stored."
-        )
-
-    session.run_transfer(_worker)
 
 
 def handle_appe(session: ClientSession, args: str | None) -> CommandReplies:
@@ -148,32 +147,23 @@ def handle_appe(session: ClientSession, args: str | None) -> CommandReplies:
         yield CommandReply(FTPReplyCode.INVALID_PARAMETER, "Missing filename argument.")
         return
 
-    file_path = _resolve_safe_path(session, args)
-
-    if file_path is None:
-        yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, "Access denied.")
-        return
-
     try:
-        validate_data_connection(session, direction="RECEIVE")
-    except DataTransferError as exc:
-        yield CommandReply(FTPReplyCode.CANNOT_OPEN_DATA_CONNECTION, str(exc))
+        file_path = resolve_session_path(session, args)
+    except SessionPathError as exc:
+        yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, str(exc))
         return
 
-    yield CommandReply(
-        FTPReplyCode.PRELIMINARY_OK,
-        f"Ready to append data to {file_path.name}.",
+    yield from _start_receive_transfer(
+        session,
+        command="APPE",
+        file_path=file_path,
+        append=True,
+        preliminary_message=f"Ready to append data to {file_path.name}.",
+        completion_message=lambda received_size: (
+            f"Data appended to {args} successfully. "
+            f"{received_size} bytes appended."
+        ),
     )
-
-    session.start_transfer("APPE", file_path, direction="UPLOAD")
-
-    def _worker() -> str:
-        received_size = receive_file(session, file_path, append=True)
-        return FTPReplyCode.TRANSFER_COMPLETE.format(
-            f"Data appended to {args} successfully. {received_size} bytes appended."
-        )
-
-    session.run_transfer(_worker)
 
 
 def handle_abor(session: ClientSession) -> str:

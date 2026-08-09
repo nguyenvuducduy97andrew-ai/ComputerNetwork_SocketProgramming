@@ -1,5 +1,9 @@
 from server.control.ftp_codes import FTPReplyCode
-from server.control.handlers.navigation_handler import resolve_session_path
+from server.control.filesystem_service import (
+    SessionPathError,
+    require_file,
+    resolve_session_path,
+)
 from server.control.session import ClientSession
 from shared.checksum import compute_file_hash
 
@@ -18,13 +22,10 @@ def handle_dele(session: ClientSession, args: str | None) -> str:
     if not args:
         return FTPReplyCode.INVALID_PARAMETER.format("Missing file argument.")
 
-    file_path = resolve_session_path(session, args)
-
-    if file_path is None:
-        return FTPReplyCode.FILE_UNAVAILABLE.format("Access denied.")
-
-    if not file_path.exists() or not file_path.is_file():
-        return FTPReplyCode.FILE_UNAVAILABLE.format("File does not exist.")
+    try:
+        file_path = require_file(session, args)
+    except SessionPathError as exc:
+        return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
 
     try:
         file_path.unlink()
@@ -40,13 +41,10 @@ def handle_rnfr(session: ClientSession, args: str | None) -> str:
     if not args:
         return FTPReplyCode.INVALID_PARAMETER.format("Missing file argument.")
 
-    file_path = resolve_session_path(session, args)
-
-    if file_path is None:
-        return FTPReplyCode.FILE_UNAVAILABLE.format("Access denied.")
-
-    if not file_path.exists() or not file_path.is_file():
-        return FTPReplyCode.FILE_UNAVAILABLE.format("File does not exist.")
+    try:
+        file_path = require_file(session, args)
+    except SessionPathError as exc:
+        return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
 
     session.pending_rename_path = file_path
     return FTPReplyCode.FILE_ACTION_PENDING.format(f"Ready to rename {file_path.name}. Please provide the new name with RNTO.")
@@ -60,10 +58,10 @@ def handle_rnto(session: ClientSession, args: str | None) -> str:
     if session.pending_rename_path is None:
         return FTPReplyCode.BAD_COMMAND_SEQUENCE.format("No rename source selected. Use RNFR first.")
 
-    new_file_path = resolve_session_path(session, args)
-
-    if new_file_path is None:
-        return FTPReplyCode.FILE_UNAVAILABLE.format("Access denied.")
+    try:
+        new_file_path = resolve_session_path(session, args)
+    except SessionPathError as exc:
+        return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
 
     try:
         session.pending_rename_path.rename(new_file_path)
@@ -83,21 +81,10 @@ def handle_hash(session: ClientSession, args: str | None) -> str:
     if not args:
         return FTPReplyCode.INVALID_PARAMETER.format("Missing file argument.")
 
-    file_path = resolve_session_path(session, args)
-
-    if file_path is None:
-        return FTPReplyCode.FILE_UNAVAILABLE.format("Access denied.")
-
     try:
-        file_path.relative_to(session.server_root.resolve())
-    except ValueError:
-        return FTPReplyCode.FILE_UNAVAILABLE.format("Access denied.")
-
-    if not file_path.exists():
-        return FTPReplyCode.FILE_UNAVAILABLE.format("File does not exist.")
-
-    if not file_path.is_file():
-        return FTPReplyCode.FILE_UNAVAILABLE.format("Target is not a file.")
+        file_path = require_file(session, args)
+    except SessionPathError as exc:
+        return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
 
     try:
         hash_value = compute_file_hash(str(file_path))
