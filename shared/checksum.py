@@ -20,12 +20,11 @@ def verify_checksum(packet_bytes: bytes) -> bool:
     return compute_checksum(packet_bytes) == 0
 
 def compute_file_hash(file_path: str) -> str:
-    # Tính mã băm SHA_256 của tệp tin vật lý (đọc theo từng khối 4KB để tránh tràn RAM).
+    """
+    Tính mã băm SHA_256 của tệp tin vật lý (đọc theo từng khối 4KB để tránh tràn RAM).
+    """
     sha256 = hashlib.sha256()
-    try:
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                sha256.update(chunk)
-        return sha256.hexdigest()
-    except Exception:
-        return ""
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()

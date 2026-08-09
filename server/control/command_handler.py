@@ -240,12 +240,3 @@ def handle_command(
     if command == "HASH":
         print("Routing to file handler: HASH")
         return handle_hash(session, args)
-
-    # ---------------------------------------------------------
-    # Unsupported command
-    # ---------------------------------------------------------
-
-    print(f"Command not implemented: {command}")
-    return FTPReplyCode.COMMAND_NOT_IMPLEMENTED.format(
-        f"Command {command} is not implemented. Enter HELP to see available commands."
-    )

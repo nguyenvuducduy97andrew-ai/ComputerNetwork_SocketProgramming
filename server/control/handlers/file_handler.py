@@ -102,6 +102,7 @@ def handle_hash(session: ClientSession, args: str | None) -> str:
     try:
         hash_value = compute_file_hash(str(file_path))
         return FTPReplyCode.COMMAND_OK.format(f"SHA-256 {file_path.name} {hash_value}")
-    except Exception as e:
-        return FTPReplyCode.FILE_UNAVAILABLE.format(f"Failed to compute file hash: {e}")
-    
+    except OSError as exc:
+        print(f"[file_handler] Failed to hash {file_path}: {exc}")
+        return FTPReplyCode.FILE_UNAVAILABLE.format("Failed to read file while computing SHA-256.")
+

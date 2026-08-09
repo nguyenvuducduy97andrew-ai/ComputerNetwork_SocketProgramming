@@ -23,7 +23,8 @@ from shared.rdt_core import reliable_recv, reliable_send
 
 TRANSFER_SIZE_PATTERN = re.compile(r"\bBYTES=(\d+)\b", re.IGNORECASE)
 ACTIVE_UPLOAD_HANDSHAKE_TIMEOUT = 6.0
-
+PASSIVE_UPLOAD_HANDSHAKE_TIMEOUT = 1.0
+PASSIVE_UPLOAD_HANDSHAKE_RETRIES = 5
 
 def _send_passive_probe(
     data_socket: socket.socket,
@@ -35,6 +36,51 @@ def _send_passive_probe(
         flags=FLAG_SYN
     )
     data_socket.sendto(probe_packet, peer_address)
+
+def _open_passive_upload_peer(
+    data_socket: socket.socket,
+    server_address: tuple[str, int],
+) -> tuple[str, int]:
+    expected_server = (socket.gethostbyname(server_address[0]), server_address[1])
+    syn_packet = pack_packet(seq=0,ack=0,flags=FLAG_SYN)
+
+    for attempt in range(PASSIVE_UPLOAD_HANDSHAKE_RETRIES):
+        data_socket.sendto(syn_packet, expected_server)
+        deadline = time.monotonic() + PASSIVE_UPLOAD_HANDSHAKE_TIMEOUT
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            data_socket.settimeout(remaining)
+            try:
+                response, server_address = data_socket.recvfrom(BUFFER_SIZE)
+                print(f"[Passive Upload] Received packet from {server_address}")
+            except socket.timeout:
+                print(f"[Passive Upload] Timeout waiting for SYN-ACK from {expected_server}. Attempt {attempt + 1}/{PASSIVE_UPLOAD_HANDSHAKE_RETRIES}.")
+                break
+
+            if server_address != expected_server:
+                continue
+
+            if len(response) < HEADER_SIZE or not verify_checksum(response):
+                print(f"[Passive Upload] Ignoring invalid packet from {server_address}")
+                continue
+
+            try:
+                packet = unpack_packet(response)
+            except ValueError:
+                print(f"[Passive Upload] Failed to unpack packet from {server_address}")
+                continue
+
+            if packet["flags"] == (FLAG_SYN | FLAG_ACK) and packet["length"] == 0 and packet["payload"] == b"":
+                print(f"[Passive Upload] Received valid SYN-ACK from {server_address}")
+                return server_address
+
+    raise TimeoutError(
+        f"Failed to establish passive upload connection with {expected_server} after {PASSIVE_UPLOAD_HANDSHAKE_RETRIES} attempts."
+    )
 
 
 def _validate_transfer_settings(session: ClientContext) -> bool:
@@ -77,7 +123,7 @@ def _require_upload_channel(
     if session.data_connection_mode != "PASSIVE" or session.data_peer_address is None:
         print("Configure PORT or PASV before uploading.")
         return None, None
-
+    
     return session.ensure_data_socket(), session.data_peer_address
 
 
@@ -135,9 +181,9 @@ def _resolve_upload_peer(
         return _wait_for_active_upload_peer(data_socket, session)
 
     if configured_peer is None:
-        raise RuntimeError("Passive upload peer is not configured.")
+        raise RuntimeError("Passive upload peer is not configured.") 
 
-    return configured_peer
+    return _open_passive_upload_peer(data_socket, configured_peer)
 
 
 def _report_upload_channel_failure(
@@ -204,6 +250,9 @@ def handle_retr(control: ControlConnection, session: ClientContext, args: str | 
             if total_bytes is not None
             else None
         ),
+        cancel_event=session.cancel_event,
+        expected_peer=peer_address,
+        respond_to_syn=(session.data_connection_mode == "PASSIVE"),
     )
 
     try:
@@ -215,10 +264,16 @@ def handle_retr(control: ControlConnection, session: ClientContext, args: str | 
         download_path.write_bytes(processed_data)
     except (ClientDataProcessingError, OSError) as error:
         print(f"Could not save downloaded file: {error}")
+        return True
 
     response = control.read_reply_line()
     print(response)
-    local_hash = compute_file_hash(download_path)
+    try: 
+        local_hash = compute_file_hash(download_path)
+    except OSError as error:
+        print(f"Could not compute hash for downloaded file: {error}")
+        return True
+
     control.send_command(f"HASH {filename}")
     hash_response = control.read_reply_line()
     code, message = parse_reply(hash_response)
@@ -280,6 +335,16 @@ def handle_stor(control: ControlConnection, session: ClientContext, args: str | 
 
     response = control.read_reply_line()
     print(response)
+    local_hash = compute_file_hash(upload_path)
+    control.send_command(f"HASH {filename}")
+    hash_response = control.read_reply_line()
+    code, message = parse_reply(hash_response)
+    if code == 200:
+        server_hash = message.split()[-1]
+        if local_hash == server_hash:
+            print(f"File {filename} uploaded successfully and verified with local hash: {local_hash}, server hash: {server_hash}.")
+        else:
+            print(f"File {filename} uploaded but hash mismatch: local {local_hash}, server {server_hash}.")
     return True
 
 
@@ -333,6 +398,16 @@ def handle_stou(control: ControlConnection, session: ClientContext, args: str | 
 
     response = control.read_reply_line()
     print(response)
+    local_hash = compute_file_hash(upload_path)
+    control.send_command(f"HASH {filename}")
+    hash_response = control.read_reply_line()
+    code, message = parse_reply(hash_response)
+    if code == 200:
+        server_hash = message.split()[-1]
+        if local_hash == server_hash:
+            print(f"File {filename} uploaded successfully and verified with local hash: {local_hash}, server hash: {server_hash}.")
+        else:
+            print(f"File {filename} uploaded but hash mismatch: local {local_hash}, server {server_hash}.")
     return True
 
 
@@ -386,6 +461,16 @@ def handle_appe(control: ControlConnection, session: ClientContext, args: str | 
 
     response = control.read_reply_line()
     print(response)
+    local_hash = compute_file_hash(upload_path)
+    control.send_command(f"HASH {filename}")
+    hash_response = control.read_reply_line()
+    code, message = parse_reply(hash_response)
+    if code == 200:
+        server_hash = message.split()[-1]
+        if local_hash == server_hash:
+            print(f"File {filename} uploaded successfully and verified with local hash: {local_hash}, server hash: {server_hash}.")
+        else:
+            print(f"File {filename} uploaded but hash mismatch: local {local_hash}, server {server_hash}.")
     return True
 
 def handle_abor(control: ControlConnection) -> bool:

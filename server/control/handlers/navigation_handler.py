@@ -180,22 +180,27 @@ def handle_list(session: ClientSession, args: str | None) -> CommandReplies:
             return
 
         listing = "\r\n".join(format_list_entry(entry) for entry in entries)
+        listing_data = listing.encode("utf-8")
         validate_data_connection(session, direction="SEND")
-        yield CommandReply(
-            FTPReplyCode.PRELIMINARY_OK,
-            "Opening data channel for directory listing.",
-        )
-        send_data(session, listing.encode("utf-8"))
-        yield CommandReply(
-            FTPReplyCode.TRANSFER_COMPLETE,
-            "Directory listing transferred successfully.",
-        )
     except DataTransferError as e:
-        print(f"[navigation_handler] Data connection error while listing directory: {e}")
         yield CommandReply(FTPReplyCode.CANNOT_OPEN_DATA_CONNECTION, str(e))
+        return
     except OSError as e:
-        print(f"[navigation_handler] Error listing directory: {e}")
         yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, "Failed to list directory.")
+        return
+    yield CommandReply(FTPReplyCode.DATA_CONNECTION_OPEN, f"Opening data connection for directory listing. BYTES= {len(listing_data)}")
+    session.start_transfer(command="LIST", file_path=target_path, direction="SEND", expected_size=len(listing_data))
+    def worker() -> str:
+        try:
+            send_data(session, listing_data)
+        except DataTransferError as e:
+            return FTPReplyCode.TRANSFER_ABORTED.format(str(e))
+        except OSError:
+            return FTPReplyCode.FILE_UNAVAILABLE.format("Failed to send directory listing.")
+        finally:
+            session.finish_transfer()
+        return FTPReplyCode.TRANSFER_COMPLETE.format(f"Directory listing sent. BYTES={len(listing_data)}")
+    session.run_transfer(worker)
 
 
 

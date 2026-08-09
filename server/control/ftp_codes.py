@@ -4,6 +4,8 @@ from enum import Enum
 class FTPReplyCode(Enum):
 
     #Positive preliminary reply
+    RESTART_MARKER = (110, "Restart marker reply.")
+    SERVICE_READY_FOR_NEW_USER = (120, "Service ready in nnn minutes.")
     DATA_CONNECTION_ALREADY_OPEN = (125, "Data connection already open; transfer starting.")
     PRELIMINARY_OK = (150, "File stable; preparing to open data connection.")
 

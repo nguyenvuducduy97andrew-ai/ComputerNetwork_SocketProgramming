@@ -2,7 +2,7 @@ import socket
 import os
 import threading
 import time
-from .constants import (MAX_PAYLOAD, BUFFER_SIZE, TIMEOUT, FLAG_DATA, FLAG_ACK, FLAG_FIN, WINDOW_SIZE, DUP_ACK_THRESHOLD)
+from .constants import (HEADER_SIZE, MAX_PAYLOAD, BUFFER_SIZE, TIMEOUT, FLAG_DATA, FLAG_ACK, FLAG_FIN, WINDOW_SIZE, DUP_ACK_THRESHOLD, FLAG_SYN)
 from .packet_struct import pack_packet, unpack_packet
 from .checksum import verify_checksum
 from typing import Any, Callable, Optional
@@ -33,7 +33,7 @@ def reliable_send(
     dest_addr: tuple,
     data_or_file_path,
     progress_callback: ProgressCallback | None = None,
-    cancel_event: threading.Event | None = None
+    cancel_event: threading.Event | None = None,
 ):
     # API gửi file/dữ liệu tin cậy qua UDP sử dụng cơ chế Fast Retransmit (3 Duplicate ACKs) và thuật toán Sliding Window (Go-Back-N)
 
@@ -138,9 +138,18 @@ def reliable_send(
             resp, sender_addr = udp_socket.recvfrom(BUFFER_SIZE)
             if sender_addr != expected_peer:
                 continue
+            if len(resp) < HEADER_SIZE:
+                continue
             if verify_checksum(resp):
-                unpacked = unpack_packet(resp)
-                if unpacked['flags'] & FLAG_FIN:
+                try:
+                    unpacked = unpack_packet(resp)
+                except ValueError:
+                    continue
+                if (unpacked['flags'] == FLAG_FIN
+                    and unpacked['ack'] == total_packets
+                    and unpacked['seq'] == 0
+                    and unpacked['payload'] == b""
+                    and unpacked['length'] == 0):
                     break
         except socket.timeout:
             _raise_if_cancelled(cancel_event)
@@ -152,6 +161,7 @@ def reliable_recv(
     progress_callback: ProgressCallback | None = None,
     cancel_event: threading.Event | None = None,
     expected_peer: tuple[str, int] | None = None,
+    respond_to_syn: bool = False,
 ) -> bytes:
     # API nhận dữ liệu tin cậy qua UDP, đảm bảo ghép nối dữ liệu đúng thứ tự và loại bỏ gói trùng lặp và phản hồi ACK tích lũy.
 
@@ -182,15 +192,31 @@ def reliable_recv(
             unpacked = unpack_packet(packet_bytes)
             flags = unpacked['flags']
             seq = unpacked['seq']
+
+            if respond_to_syn and flags == FLAG_SYN:
+                # Phản hồi SYN để xác nhận kết nối
+                syn_ack_packet = pack_packet(seq = 0, ack = seq, flags = FLAG_SYN | FLAG_ACK)
+                udp_socket.sendto(syn_ack_packet, sender_addr)
+                continue
+
             
             # Xử lý gói FIN
-            if flags & FLAG_FIN:
-                ack_fin = pack_packet(seq = 0, ack = seq, flags = FLAG_FIN)
-                udp_socket.sendto(ack_fin, sender_addr)
-                break
+            if flags == FLAG_FIN:
+                if (unpacked["length"] != 0 or unpacked["payload"] != b"" 
+                    or unpacked["ack"] != expected_seq):
+                    continue  # Gói FIN không hợp lệ
 
+                if seq != expected_seq:
+                    # Gửi lại ACK của gói kỳ vọng gần nhất
+                    ack_packet = pack_packet(seq = 0, ack = expected_seq, flags = FLAG_ACK)
+                    udp_socket.sendto(ack_packet, sender_addr)
+                    continue
+                ack_packet = pack_packet(seq = 0, ack = expected_seq, flags = FLAG_ACK)
+                udp_socket.sendto(ack_packet, sender_addr)
+                break  # Kết thúc vòng lặp nhận dữ liệu
+    
             # Xử lý gói DATA
-            if flags & FLAG_DATA:
+            if flags == FLAG_DATA:
                 if seq == expected_seq:
                     # Nhận đúng gói mong đợi -> Đưa vào bộ đệm và tăng Sequence kỳ vọng
                     received_chunks[seq] = unpacked['payload']

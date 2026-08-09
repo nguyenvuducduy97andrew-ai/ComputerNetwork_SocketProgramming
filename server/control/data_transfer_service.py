@@ -1,3 +1,4 @@
+import time
 import os
 import socket
 import zlib
@@ -84,22 +85,53 @@ def _discover_passive_client(
             "Passive UDP socket is not available. Use PASV first."
         )
 
-    udp_socket.settimeout(5.0)
 
-    try:
-        _, client_address = udp_socket.recvfrom(2048)
-    except socket.timeout as exc:
-        raise DataTransferError(
-            "Timed out waiting for the client's passive UDP probe."
-        ) from exc
+    deadline = time.monotonic() + 5.0
 
-    if client_address[0] != session.client_address[0]:
-        raise DataTransferError(
-            "Passive UDP probe came from an unexpected host."
+    while True:
+        _raise_if_transfer_cancelled(session)
+        remaining_time = deadline - time.monotonic()
+        if remaining_time <= 0:
+            raise DataTransferError(
+                "Timed out while waiting for the client to send data in passive mode."
+            )
+        udp_socket.settimeout(remaining_time)
+
+        try:
+            response, client_address = udp_socket.recvfrom(BUFFER_SIZE)
+        except socket.timeout:
+            raise DataTransferError(
+                "Timed out while waiting for the client to send data in passive mode."
+            )
+        if client_address[0] != session.client_address[0]:
+            continue
+        if len(response) < HEADER_SIZE or not verify_checksum(response):
+            print(
+                f"[DataTransferService] Ignoring invalid packet from {client_address[0]}:{client_address[1]}"
+            )
+            continue
+        try:
+            packet = unpack_packet(response)
+        except ValueError:
+            print(
+                f"[DataTransferService] Ignoring malformed packet from {client_address[0]}:{client_address[1]}"
+            )
+            continue
+        if packet["flags"] != FLAG_SYN or packet["length"] != 0 or packet["payload"] != b"":
+            print(
+                f"[DataTransferService] Ignoring unexpected packet from {client_address[0]}:{client_address[1]}"
+            )
+            continue
+
+        session.passive_client_address = client_address
+        print(
+            f"[DataTransferService] Discovered passive client address: {client_address[0]}:{client_address[1]}"
         )
+        syn_ack_packet = pack_packet(seq=0, ack=0, flags=FLAG_SYN | FLAG_ACK)
+        udp_socket.sendto(syn_ack_packet, client_address)
 
-    session.passive_client_address = client_address
-    return client_address
+        return client_address
+
 
 
 def _resolve_send_channel(session: ClientSession) -> tuple[socket.socket, tuple[str, int], bool]:
@@ -196,16 +228,29 @@ def _resolve_receive_channel(
     validate_data_connection(session, direction="RECEIVE")
 
     if session.data_connection_mode == "PASSIVE":
+        udp_socket = session.passive_udp_socket
+        if udp_socket is None:
+            raise DataTransferError(
+                "Passive UDP socket is not available. Use PASV before transferring data."
+            )
+        
+        client_address = session.passive_client_address
+        if client_address is None:
+            client_address = _discover_passive_client(session)
+        
         if session.passive_udp_socket is None:
             raise DataTransferError("Passive UDP socket is not available. Use PASV before transferring data.")
 
         return (
-            session.passive_udp_socket,
-            session.passive_client_address,
+            udp_socket,
+            client_address,
             False,
         )
-
+   
     if session.data_connection_mode == "ACTIVE":
+        if session.active_udp_address is None:
+            raise DataTransferError("Active data address is not configured. Use PORT before transferring data.")
+        
         udp_socket, client_address = _open_active_receive_channel(session)
         return udp_socket, client_address, True
 
@@ -330,6 +375,7 @@ def receive_file(session: ClientSession, save_file_path: Path, append: bool = Fa
             udp_socket,
             cancel_event=session.cancel_event,
             expected_peer=expected_peer,
+            respond_to_syn=(session.data_connection_mode == "PASSIVE"),
         )
         data = _apply_incoming_mode(raw_data, transfer_mode)
         data = _apply_incoming_type(data, transfer_type)

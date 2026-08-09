@@ -73,7 +73,9 @@ def handle_list(control: ControlConnection, session: ClientContext, args: str | 
         probe_packet = pack_packet(seq=0, ack=0, flags=FLAG_SYN)
         data_socket.sendto(probe_packet, session.data_peer_address)
 
-    listing_data = reliable_recv(data_socket)
+    expected_peer = session.data_peer_address if session.data_connection_mode == "PASSIVE" else None
+
+    listing_data = reliable_recv(data_socket, expected_peer=expected_peer, respond_to_syn=(session.data_connection_mode == "PASSIVE"))
     listing = listing_data.decode("utf-8", errors="replace")
 
     if listing:
