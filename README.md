@@ -127,7 +127,6 @@ Mỗi lệnh truyền dữ liệu trả reply sơ bộ `125`/`150`; worker thự
 ### Hạn chế đã biết
 
 - Client CLI hiện xử lý transfer đồng bộ, nên khó nhập `ABOR` tương tác từ chính cửa sổ client trong lúc handler đang chờ transfer; server đã có cancellation nhưng client cần tách luồng nhập/control để khai thác đầy đủ.
-- RDT dùng cửa sổ cố định và chưa có tổng deadline/số lần retry tối đa cho toàn bộ transfer.
 - Upload/download hiện có thể nạp toàn bộ payload vào RAM, chưa tối ưu cho file lớn.
 - Chưa có khóa theo file; hai session khác nhau có thể thao tác cùng một đường dẫn.
 - Cổng UDP passive/active được cấp động, chưa có cấu hình dải port dành cho triển khai qua NAT.

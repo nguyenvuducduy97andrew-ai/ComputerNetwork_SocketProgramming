@@ -202,8 +202,7 @@ def reliable_recv(
             
             # Xử lý gói FIN
             if flags == FLAG_FIN:
-                if (unpacked["length"] != 0 or unpacked["payload"] != b"" 
-                    or unpacked["ack"] != expected_seq):
+                if (unpacked["length"] != 0 or unpacked["payload"] != b"" or unpacked["seq"] != expected_seq):
                     continue  # Gói FIN không hợp lệ
 
                 if seq != expected_seq:
@@ -211,8 +210,8 @@ def reliable_recv(
                     ack_packet = pack_packet(seq = 0, ack = expected_seq, flags = FLAG_ACK)
                     udp_socket.sendto(ack_packet, sender_addr)
                     continue
-                ack_packet = pack_packet(seq = 0, ack = expected_seq, flags = FLAG_ACK)
-                udp_socket.sendto(ack_packet, sender_addr)
+                ack_fin = pack_packet(seq = 0, ack = seq, flags = FLAG_FIN)
+                udp_socket.sendto(ack_fin, sender_addr)
                 break  # Kết thúc vòng lặp nhận dữ liệu
     
             # Xử lý gói DATA

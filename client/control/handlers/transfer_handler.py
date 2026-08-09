@@ -250,7 +250,6 @@ def handle_retr(control: ControlConnection, session: ClientContext, args: str | 
             if total_bytes is not None
             else None
         ),
-        cancel_event=session.cancel_event,
         expected_peer=peer_address,
         respond_to_syn=(session.data_connection_mode == "PASSIVE"),
     )

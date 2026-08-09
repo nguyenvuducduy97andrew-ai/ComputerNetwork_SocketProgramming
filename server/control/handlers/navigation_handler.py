@@ -188,7 +188,7 @@ def handle_list(session: ClientSession, args: str | None) -> CommandReplies:
     except OSError as e:
         yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, "Failed to list directory.")
         return
-    yield CommandReply(FTPReplyCode.DATA_CONNECTION_OPEN, f"Opening data connection for directory listing. BYTES= {len(listing_data)}")
+    yield CommandReply(FTPReplyCode.PRELIMINARY_OK, f"Opening data connection for directory listing. BYTES= {len(listing_data)}")
     session.start_transfer(command="LIST", file_path=target_path, direction="SEND", expected_size=len(listing_data))
     def worker() -> str:
         try:
