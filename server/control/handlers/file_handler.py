@@ -42,10 +42,13 @@ def handle_rnfr(session: ClientSession, args: str | None) -> str:
         return FTPReplyCode.INVALID_PARAMETER.format("Missing file argument.")
 
     try:
+        print(f"[file_handler] Resolving path for RNFR: {args!r}")
         file_path = require_file(session, args)
     except SessionPathError as exc:
+        print(f"[file_handler] RNFR path resolution error: {exc}")
         return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
-
+    
+    print(f"[file_handler] RNFR path resolved successfully: {file_path}")
     session.pending_rename_path = file_path
     return FTPReplyCode.FILE_ACTION_PENDING.format(f"Ready to rename {file_path.name}. Please provide the new name with RNTO.")
 

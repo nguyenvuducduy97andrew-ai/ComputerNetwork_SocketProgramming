@@ -12,13 +12,17 @@ from client.control.handlers.transfer_handler import _wait_for_active_upload_pee
 from server.control.data_transfer_service import receive_file
 from server.control.session import ClientSession
 from shared.rdt_core import reliable_send
+from tests.reporting import VietnameseTestCase
 
 
 LOOPBACK = "127.0.0.1"
 
 
-class ActiveUploadTests(unittest.TestCase):
+class ActiveUploadTests(VietnameseTestCase):
+    suite_title = "UPLOAD ACTIVE VÀ BẮT TAY UDP"
+
     def test_active_upload_handshake_and_transfer(self) -> None:
+        """Bắt tay Active và truyền dữ liệu đầy đủ"""
         payload = (b"active-upload-integration\x00" * 200) + b"done"
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -53,7 +57,10 @@ class ActiveUploadTests(unittest.TestCase):
             reliable_send(client_socket, server_peer, payload)
 
             server_thread.join(5.0)
-            self.assertFalse(server_thread.is_alive(), "Active upload did not finish")
+            self.assertFalse(
+                server_thread.is_alive(),
+                "Upload Active không kết thúc đúng hạn.",
+            )
             self.assertNotIn("error", result)
             self.assertEqual(result.get("size"), len(payload))
             self.assertEqual(destination.read_bytes(), payload)

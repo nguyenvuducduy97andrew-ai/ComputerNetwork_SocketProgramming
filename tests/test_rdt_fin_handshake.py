@@ -7,6 +7,7 @@ from shared.checksum import verify_checksum
 from shared.constants import BUFFER_SIZE, FLAG_ACK, FLAG_FIN
 from shared.packet_struct import pack_packet, unpack_packet
 from shared.rdt_core import RDTTeardownTimeout, reliable_recv, reliable_send
+from tests.reporting import VietnameseTestCase
 
 
 LOOPBACK = "127.0.0.1"
@@ -44,8 +45,11 @@ class FinAckDroppingSocket:
         return self.sock.sendto(data, address)
 
 
-class RDTFinHandshakeTests(unittest.TestCase):
+class RDTFinHandshakeTests(VietnameseTestCase):
+    suite_title = "BẮT TAY KẾT THÚC RDT"
+
     def test_receiver_reacks_fin_when_first_fin_ack_is_lost(self) -> None:
+        """Bên nhận gửi lại FIN-ACK khi gói đầu tiên bị mất"""
         sender = make_udp_socket()
         receiver_raw = make_udp_socket()
         receiver = FinAckDroppingSocket(receiver_raw, drops=1)
@@ -70,6 +74,7 @@ class RDTFinHandshakeTests(unittest.TestCase):
         self.assertEqual(receiver.fin_ack_drops, 1)
 
     def test_sender_times_out_when_every_fin_ack_is_lost(self) -> None:
+        """Bên gửi dừng đúng hạn khi mọi FIN-ACK đều bị mất"""
         sender = make_udp_socket()
         receiver_raw = make_udp_socket()
         receiver = FinAckDroppingSocket(receiver_raw, drops=None)
@@ -99,6 +104,7 @@ class RDTFinHandshakeTests(unittest.TestCase):
         self.assertEqual(receiver.fin_ack_drops, 3)
 
     def test_early_fin_receives_cumulative_ack_and_transfer_continues(self) -> None:
+        """FIN đến sớm được ACK và quá trình truyền vẫn tiếp tục"""
         sender = make_udp_socket()
         receiver = make_udp_socket()
         self.addCleanup(sender.close)

@@ -5,6 +5,7 @@ from client.control.handlers.transfer_handler import (
     _send_upload_and_wait_for_completion,
 )
 from shared.rdt_core import RDTTeardownTimeout
+from tests.reporting import VietnameseTestCase
 
 
 class FakeControlConnection:
@@ -17,8 +18,11 @@ class FakeControlConnection:
         return self.reply
 
 
-class UploadCompletionTests(unittest.TestCase):
+class UploadCompletionTests(VietnameseTestCase):
+    suite_title = "XÁC NHẬN HOÀN TẤT UPLOAD"
+
     def test_tcp_226_confirms_upload_after_udp_teardown_timeout(self) -> None:
+        """TCP 226 xác nhận upload khi FIN-ACK UDP bị mất"""
         control = FakeControlConnection("226 Transfer complete")
 
         with patch(
@@ -33,6 +37,7 @@ class UploadCompletionTests(unittest.TestCase):
         self.assertEqual(control.read_count, 1)
 
     def test_tcp_failure_rejects_upload_after_udp_teardown_timeout(self) -> None:
+        """Phản hồi TCP lỗi từ chối upload khi FIN-ACK UDP bị mất"""
         control = FakeControlConnection("426 Transfer aborted")
 
         with patch(

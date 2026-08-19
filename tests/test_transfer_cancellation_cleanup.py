@@ -11,13 +11,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from server.control.data_transfer_service import receive_file
 from server.control.session import ClientSession
 from shared.rdt_core import reliable_recv, reliable_send
+from tests.reporting import VietnameseTestCase
 
 
 LOOPBACK = "127.0.0.1"
 
 
-class RDTCancellationTests(unittest.TestCase):
+class RDTCancellationTests(VietnameseTestCase):
+    suite_title = "HỦY QUÁ TRÌNH TRUYỀN RDT"
+
     def test_reliable_send_raises_interrupted_error_when_cancelled(self) -> None:
+        """Bên gửi dừng và báo InterruptedError khi bị hủy"""
         sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         unused_receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         unused_receiver.bind((LOOPBACK, 0))
@@ -43,10 +47,14 @@ class RDTCancellationTests(unittest.TestCase):
         cancel_event.set()
         send_thread.join(5.0)
 
-        self.assertFalse(send_thread.is_alive(), "Cancelled sender did not stop")
+        self.assertFalse(
+            send_thread.is_alive(),
+            "Bên gửi không dừng sau khi có yêu cầu hủy.",
+        )
         self.assertIsInstance(result.get("error"), InterruptedError)
 
     def test_reliable_recv_raises_interrupted_error_when_cancelled(self) -> None:
+        """Bên nhận dừng và báo InterruptedError khi bị hủy"""
         receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         receiver.bind((LOOPBACK, 0))
         self.addCleanup(receiver.close)
@@ -65,12 +73,18 @@ class RDTCancellationTests(unittest.TestCase):
         cancel_event.set()
         receive_thread.join(5.0)
 
-        self.assertFalse(receive_thread.is_alive(), "Cancelled receiver did not stop")
+        self.assertFalse(
+            receive_thread.is_alive(),
+            "Bên nhận không dừng sau khi có yêu cầu hủy.",
+        )
         self.assertIsInstance(result.get("error"), InterruptedError)
 
 
-class SessionCleanupTests(unittest.TestCase):
+class SessionCleanupTests(VietnameseTestCase):
+    suite_title = "DỌN DẸP PHIÊN TRUYỀN"
+
     def test_cleanup_cancels_worker_closes_sockets_and_suppresses_reply(self) -> None:
+        """Cleanup hủy worker, đóng socket và không gửi phản hồi muộn"""
         with tempfile.TemporaryDirectory() as temp_dir:
             passive_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             passive_socket.bind((LOOPBACK, 0))

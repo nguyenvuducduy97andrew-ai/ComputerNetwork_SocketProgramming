@@ -13,10 +13,12 @@ def resolve_session_path(session: ClientSession, user_path: str) -> Path:
     """Hàm này nhận một đường dẫn do người dùng cung cấp và trả về một đối tượng Path tuyệt đối"""
     candidate = (session.get_absolute_current_directory() / user_path).resolve()
     server_root = session.server_root.resolve()
-
+    print (f"[filesystem_service] Resolving user path: {user_path!r} to candidate path: {candidate}")
     try:
+        print(f"[filesystem_service] Checking if candidate path {candidate} is within server root {server_root}")
         candidate.relative_to(server_root)
     except ValueError as exc:
+        print(f"[filesystem_service] Candidate path {candidate} is outside of server root {server_root}. Raising SessionPathError.")
         raise SessionPathError("Access denied.") from exc
 
     return candidate
