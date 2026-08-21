@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from shared.constants import FLAG_ACK, FLAG_DATA, FLAG_FIN
 from shared.packet_struct import pack_packet
 from shared.rdt_core import reliable_recv, reliable_send
+from tests.reporting import VietnameseTestCase
 
 
 LOOPBACK = "127.0.0.1"
@@ -21,8 +22,11 @@ def make_udp_socket() -> socket.socket:
     return udp_socket
 
 
-class RDTPeerFilteringTests(unittest.TestCase):
+class RDTPeerFilteringTests(VietnameseTestCase):
+    suite_title = "LỌC ĐỊA CHỈ PEER RDT"
+
     def test_receiver_ignores_data_and_fin_from_unexpected_peer(self) -> None:
+        """Bên nhận bỏ qua DATA và FIN từ peer không mong đợi"""
         receiver = make_udp_socket()
         expected_sender = make_udp_socket()
         attacker = make_udp_socket()
@@ -59,11 +63,15 @@ class RDTPeerFilteringTests(unittest.TestCase):
         reliable_send(expected_sender, receiver_address, payload)
         receive_thread.join(5.0)
 
-        self.assertFalse(receive_thread.is_alive(), "Receiver did not finish")
+        self.assertFalse(
+            receive_thread.is_alive(),
+            "Bên nhận không kết thúc đúng hạn.",
+        )
         self.assertNotIn("error", result)
         self.assertEqual(result.get("data"), payload)
 
     def test_sender_ignores_ack_and_fin_from_unexpected_peer(self) -> None:
+        """Bên gửi bỏ qua ACK và FIN từ peer không mong đợi"""
         sender = make_udp_socket()
         receiver = make_udp_socket()
         attacker = make_udp_socket()
@@ -104,8 +112,14 @@ class RDTPeerFilteringTests(unittest.TestCase):
         send_thread.join(5.0)
         receive_thread.join(5.0)
 
-        self.assertFalse(send_thread.is_alive(), "Sender did not finish")
-        self.assertFalse(receive_thread.is_alive(), "Receiver did not finish")
+        self.assertFalse(
+            send_thread.is_alive(),
+            "Bên gửi không kết thúc đúng hạn.",
+        )
+        self.assertFalse(
+            receive_thread.is_alive(),
+            "Bên nhận không kết thúc đúng hạn.",
+        )
         self.assertNotIn("send_error", result)
         self.assertNotIn("receive_error", result)
         self.assertEqual(result.get("data"), payload)

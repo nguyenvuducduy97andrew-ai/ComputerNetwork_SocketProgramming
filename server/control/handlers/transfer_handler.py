@@ -116,6 +116,7 @@ def handle_stor(session: ClientSession, args: str | None) -> CommandReplies:
 
 
 def handle_stou(session: ClientSession) -> CommandReplies:
+    """Hàm xử lý lệnh STOU tạo một tệp duy nhất trên máy chủ và nhận dữ liệu từ client. Trả về các phản hồi FTP tương ứng."""
     print("[transfer_handler] Handling STOU command.")
 
     unique_filename = f"file_{int(time())}.dat"

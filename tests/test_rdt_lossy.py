@@ -1,24 +1,27 @@
-import sys
 import os
-import socket
 import random
+import socket
+import sys
+import tempfile
 import threading
 import time
+from pathlib import Path
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from shared.rdt_core import reliable_recv, reliable_send
 from shared.checksum import compute_file_hash
+from shared.rdt_core import reliable_recv, reliable_send
+from tests.reporting import print_test_result, print_test_step, print_test_suite
+
 
 class LossyUDPSocket:
-    # Wrapper cho UDP Socket để giả lập mất gói tin ngẫu nhiên.
+    """Bọc UDP socket để giả lập mất gói tin ngẫu nhiên."""
 
     def __init__(self, real_socket: socket.socket, drop_rate: float = 0.20):
         self.sock = real_socket
         self.drop_rate = drop_rate
     
     def sendto(self, data, addr):
-        # Tỉ lệ 20% làm mất gói tin
         if random.random() < self.drop_rate:
             return
         self.sock.sendto(data, addr)
@@ -26,59 +29,59 @@ class LossyUDPSocket:
     def recvfrom(self, bufsize):
         return self.sock.recvfrom(bufsize)
     
-    def settimeout(self, t):
-        self.sock.settimeout(t)
+    def settimeout(self, timeout):
+        self.sock.settimeout(timeout)
 
-def run_test():
-    print("=== TEST MÔ PHỎNG RDT TRÊN MẠNG LỖI (MẤT 20% GÓI TIN) ===")
-    server_addr = ('127.0.0.1', 9998)
 
-    # Tạo file nhị phân mẫu 100kB để test
-    test_file_path = "tests/sample_input.bin"
-    output_file_path = "tests/sample_output.bin"
-    os.makedirs("tests", exist_ok=True)
-    
-    sample_bytes = os.urandom(100 * 1024)  # 100 KB dữ liệu ngẫu nhiên
-    with open(test_file_path, "wb") as f:
-        f.write(sample_bytes)
-        
-    src_hash = compute_file_hash(test_file_path)
-    print(f"[+] SHA-256 File gốc:  {src_hash}")
+def run_test() -> None:
+    print_test_suite("RDT TRÊN MẠNG MẤT 20% GÓI TIN")
+    server_address = ("127.0.0.1", 9998)
 
-    # Tạo Luồng Server Nhận File
-    def server_thread():
-        recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        recv_sock.bind(server_addr)
-        reliable_recv(recv_sock, save_file_path=output_file_path)
-        recv_sock.close()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        input_path = Path(temp_dir) / "du_lieu_gui.bin"
+        output_path = Path(temp_dir) / "du_lieu_nhan.bin"
+        input_path.write_bytes(os.urandom(100 * 1024))
 
-    t = threading.Thread(target=server_thread)
-    t.start()
-    time.sleep(0.1)
+        source_hash = compute_file_hash(input_path)
+        print_test_step(f"SHA-256 file nguồn: {source_hash}")
 
-    # Phía Gửi chạy qua Lossy Socket (Mất 20% gói tin)
-    send_sock_raw = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    lossy_sock = LossyUDPSocket(send_sock_raw, drop_rate=0.20)
-    
-    start_time = time.time()
-    print("[+] Bắt đầu truyền file 100KB qua Sliding Window (GBN) trên mạng lỗi 20%...")
-    reliable_send(lossy_sock, server_addr, test_file_path)
-    elapsed = time.time() - start_time
-    
-    t.join()
-    send_sock_raw.close()
+        def receive_on_server() -> None:
+            receive_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                receive_socket.bind(server_address)
+                reliable_recv(receive_socket, save_file_path=output_path)
+            finally:
+                receive_socket.close()
 
-    # Đánh giá tính toàn vẹn end-to-end bằng SHA-256
-    dest_hash = compute_file_hash(output_file_path)
-    print(f"[+] SHA-256 File nhận: {dest_hash}")
-    print(f"[+] Thời gian truyền:   {elapsed:.2f} giây")
+        receive_thread = threading.Thread(target=receive_on_server)
+        receive_thread.start()
+        time.sleep(0.1)
 
-    # Dọn dẹp file test
-    if os.path.exists(test_file_path): os.remove(test_file_path)
-    if os.path.exists(output_file_path): os.remove(output_file_path)
+        raw_send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        lossy_socket = LossyUDPSocket(raw_send_socket, drop_rate=0.20)
 
-    assert src_hash == dest_hash, "LỖI: Hash không khớp, dữ liệu bị sai lệch!"
-    print("\n KẾT QUẢ EXCELLENT: File truyền thành công 100% nguyên vẹn, Hash trùng khớp dù bị đứt gói 20%!")
+        print_test_step(
+            "Truyền file 100 KB bằng Sliding Window trên mạng mất gói"
+        )
+        start_time = time.monotonic()
+        try:
+            reliable_send(lossy_socket, server_address, input_path)
+        finally:
+            raw_send_socket.close()
+        elapsed = time.monotonic() - start_time
 
-if __name__ == '__main__':
+        receive_thread.join()
+        destination_hash = compute_file_hash(output_path)
+        print_test_step(f"SHA-256 file nhận: {destination_hash}")
+        print_test_step(f"Thời gian truyền: {elapsed:.2f} giây")
+
+        assert source_hash == destination_hash, (
+            "Hash không khớp, dữ liệu nhận đã bị sai lệch."
+        )
+        print_test_result(
+            "File được truyền nguyên vẹn dù mất ngẫu nhiên 20% gói tin"
+        )
+
+
+if __name__ == "__main__":
     run_test()

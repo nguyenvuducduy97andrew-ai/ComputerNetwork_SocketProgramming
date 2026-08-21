@@ -31,7 +31,8 @@ import stat
 #SIZE: File Size
 #MDTM: Modification Time
 
-def format_list_entry(entry: Path) -> str:
+def format_list_entry(entry: Path) -> str: #Dùng cho LIST command
+    """Hàm này nhận một đối tượng Path và trả về một chuỗi định dạng"""
     file_stat = entry.stat()
 
     permissions = stat.filemode(file_stat.st_mode)
@@ -256,10 +257,10 @@ def handle_mdtm(session: ClientSession, args: str | None) -> str:
     try:
         modified_at = datetime.fromtimestamp(
             target_file.stat().st_mtime,
-            tz=timezone.utc,
+            #tz=timezone.utc, Strictly speaking, MDTM should return the modification time in UTC, but for simplicity, we will use local time here.
         )
         return FTPReplyCode.FILE_STATUS.format(
-            modified_at.strftime("%Y%m%d%H%M%S")
+            modified_at.strftime("%Y/%m/%d-%H:%M:%S")
         )
     except Exception as e:
         print(f"[navigation_handler] Error getting modification time of file: {e}")
