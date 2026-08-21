@@ -18,6 +18,16 @@ def handle_command(
     args: str | None,
 ) -> bool:
     command = command.upper()
+
+    # Data worker đang giữ quyền đọc reply trên control channel. Chỉ ABOR
+    # được phép đi song song; các lệnh khác sẽ được nhập lại sau khi transfer
+    # kết thúc để không đọc nhầm reply 226/426.
+    if context.transfer_in_progress:
+        if command == "ABOR":
+            return handle_abor(control, context)
+        print("A data transfer is in progress. Use ABOR to cancel it.")
+        return True
+
 #=====================Pre-logging========================
     if command == "USER":
         return handle_user(control, context, args)
@@ -98,7 +108,7 @@ def handle_command(
         return handle_appe(control, context, args)
 
     if command == "ABOR":
-        return handle_abor(control)
+        return handle_abor(control, context)
 
     #====================File Management========================
 

@@ -368,13 +368,13 @@ Project hiện tại là Hybrid FTP:
 - Data channel: UDP + giao thức RDT tự cài đặt.
 - Server bind control tại `0.0.0.0:2121`.
 - Tài khoản lab: `admin / 123456`.
-- Server root thực tế: toàn bộ thư mục `data/`.
+- Server root thực tế: thư mục `data/server_storage/`.
 - Client download vào `data/client_downloads/`.
 - Active Mode dùng lệnh `PORT <udp-port>`.
 - Passive Mode dùng `PASV`, server trả `UDP_PORT=<port>`.
 - RDT dùng sequence number, cumulative ACK, checksum, timeout, retransmission, sliding window và FIN handshake.
 
-Lưu ý: mặc dù repository có `data/server_storage/`, server hiện cấu hình root tại `data/`. Vì vậy lệnh `STOR active_test.bin` sẽ lưu thành `data/active_test.bin` trên server.
+Server và client dùng hai vùng lưu trữ riêng. Lệnh `STOR active_test.bin` lưu file remote thành `data/server_storage/active_test.bin`; file local của client nằm trong `data/client_downloads/`.
 
 ### 6.2 Yêu cầu hai máy
 
@@ -460,7 +460,7 @@ Terminal server cần hiển thị:
 
 ```text
 Starting Hybrid FTP Server on 0.0.0.0:2121...
-Server root directory: ...\data
+Server root directory: ...\data\server_storage
 ```
 
 ### 6.6 Capture Active Mode

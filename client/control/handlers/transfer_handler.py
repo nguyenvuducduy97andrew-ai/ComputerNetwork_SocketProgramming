@@ -2,6 +2,7 @@
 
 
 from pathlib import Path
+from collections.abc import Callable
 import re
 import socket
 import time
@@ -27,9 +28,11 @@ from shared.rdt_core import (
 
 
 TRANSFER_SIZE_PATTERN = re.compile(r"\bBYTES=(\d+)\b", re.IGNORECASE)
+REMOTE_NAME_PATTERN = re.compile(r"\bREMOTE_NAME=([^\s]+)", re.IGNORECASE)
 ACTIVE_UPLOAD_HANDSHAKE_TIMEOUT = 6.0
 PASSIVE_UPLOAD_HANDSHAKE_TIMEOUT = 1.0
 PASSIVE_UPLOAD_HANDSHAKE_RETRIES = 5
+ABORT_SUCCESS_MESSAGE = "Abort command successful."
 
 def _send_passive_probe(
     data_socket: socket.socket,
@@ -45,26 +48,30 @@ def _send_passive_probe(
 def _open_passive_upload_peer(
     data_socket: socket.socket,
     server_address: tuple[str, int],
+    cancel_event=None,
 ) -> tuple[str, int]:
     expected_server = (socket.gethostbyname(server_address[0]), server_address[1])
     syn_packet = pack_packet(seq=0,ack=0,flags=FLAG_SYN)
 
     for attempt in range(PASSIVE_UPLOAD_HANDSHAKE_RETRIES):
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("Transfer aborted.")
         data_socket.sendto(syn_packet, expected_server)
         deadline = time.monotonic() + PASSIVE_UPLOAD_HANDSHAKE_TIMEOUT
 
         while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Transfer aborted.")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
 
-            data_socket.settimeout(remaining)
+            data_socket.settimeout(min(remaining, 0.1))
             try:
                 response, server_address = data_socket.recvfrom(BUFFER_SIZE)
                 print(f"[Passive Upload] Received packet from {server_address}")
             except socket.timeout:
-                print(f"[Passive Upload] Timeout waiting for SYN-ACK from {expected_server}. Attempt {attempt + 1}/{PASSIVE_UPLOAD_HANDSHAKE_RETRIES}.")
-                break
+                continue
 
             if server_address != expected_server:
                 continue
@@ -140,19 +147,19 @@ def _wait_for_active_upload_peer(
     deadline = time.monotonic() + ACTIVE_UPLOAD_HANDSHAKE_TIMEOUT
 
     while True:
+        if session.transfer_cancel_event.is_set():
+            raise InterruptedError("Transfer aborted.")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError(
                 "Timed out waiting for the server's active upload SYN."
             )
 
-        data_socket.settimeout(remaining)
+        data_socket.settimeout(min(remaining, 0.1))
         try:
             response, server_address = data_socket.recvfrom(BUFFER_SIZE)
-        except socket.timeout as exc:
-            raise TimeoutError(
-                "Timed out waiting for the server's active upload SYN."
-            ) from exc
+        except socket.timeout:
+            continue
 
         if server_address[0] != expected_server_ip:
             continue
@@ -188,16 +195,21 @@ def _resolve_upload_peer(
     if configured_peer is None:
         raise RuntimeError("Passive upload peer is not configured.") 
 
-    return _open_passive_upload_peer(data_socket, configured_peer)
+    return _open_passive_upload_peer(
+        data_socket,
+        configured_peer,
+        cancel_event=session.transfer_cancel_event,
+    )
 
 
 def _report_upload_channel_failure(
     control: ControlConnection,
     error: BaseException,
+    session: ClientContext | None = None,
 ) -> None:
     print(f"Could not open upload data channel: {error}")
     try:
-        print(control.read_reply_line())
+        _read_final_transfer_reply(control, session)
     except (ConnectionError, OSError) as reply_error:
         print(f"Could not read the final transfer reply: {reply_error}")
 
@@ -216,6 +228,7 @@ def _send_upload_and_wait_for_completion(
     data_socket: socket.socket,
     peer_address: tuple[str, int],
     upload_data: bytes,
+    session: ClientContext | None = None,
 ) -> bool:
     """Send bytes and use the reliable TCP reply as the final verdict."""
     teardown_error: RDTTeardownTimeout | None = None
@@ -226,19 +239,24 @@ def _send_upload_and_wait_for_completion(
             peer_address,
             upload_data,
             progress_callback=make_progress_callback("Upload"),
+            cancel_event=(session.transfer_cancel_event if session else None),
         )
+    except InterruptedError:
+        print("Upload cancellation requested.")
+        _read_final_transfer_reply(control, session)
+        return False
     except RDTDataTimeout as error:
         print(f"UDP data transfer timed out: {error}")
-        response = control.read_reply_line()
-        print(response)
+        _read_final_transfer_reply(control, session)
         return False
     except RDTTeardownTimeout as error:
         teardown_error = error
         print(f"UDP teardown was not acknowledged: {error}")
 
-    response = control.read_reply_line()
-    print(response)
-    code, _ = parse_reply(response)
+    code, aborted = _read_final_transfer_reply(control, session)
+
+    if aborted:
+        return False
 
     if code == 226:
         if teardown_error is not None:
@@ -248,6 +266,63 @@ def _send_upload_and_wait_for_completion(
     if teardown_error is not None:
         print("The transfer could not be confirmed through either channel.")
     return False
+
+
+def _read_final_transfer_reply(
+    control: ControlConnection,
+    session: ClientContext | None = None,
+) -> tuple[int | None, bool]:
+    """Đọc final reply và drain reply ABOR nếu yêu cầu đến quá muộn."""
+    abort_requested = session.mark_transfer_finalizing() if session else False
+    response = control.read_reply_line()
+    print(response)
+    code, message = parse_reply(response)
+    abort_confirmed = ABORT_SUCCESS_MESSAGE.lower() in message.lower()
+
+    if abort_requested and not abort_confirmed:
+        # Server đã commit reply cuối trước khi nhận ABOR. Theo thứ tự được
+        # đảm bảo phía server, reply kế tiếp là kết quả "no transfer" của ABOR.
+        late_abort_response = control.read_reply_line()
+        print(late_abort_response)
+
+    return code, abort_confirmed
+
+
+def _start_upload_worker(
+    control: ControlConnection,
+    session: ClientContext,
+    data_socket: socket.socket,
+    configured_peer: tuple[str, int] | None,
+    upload_data: bytes,
+    on_success: Callable[[], None],
+) -> None:
+    """Chạy upload ở nền; worker là nơi duy nhất đọc final reply."""
+    def worker() -> None:
+        try:
+            peer_address = _resolve_upload_peer(
+                data_socket,
+                configured_peer,
+                session,
+            )
+        except InterruptedError:
+            print("Upload cancellation requested.")
+            _read_final_transfer_reply(control, session)
+            return
+        except (OSError, RuntimeError, TimeoutError) as error:
+            _report_upload_channel_failure(control, error, session)
+            return
+
+        if _send_upload_and_wait_for_completion(
+            control,
+            data_socket,
+            peer_address,
+            upload_data,
+            session,
+        ):
+            on_success()
+
+    session.start_transfer(worker)
+    print("Transfer started in background. Enter ABOR to cancel it.")
 
 
 def _resolve_local_download_path(filename: str) -> Path:
@@ -260,6 +335,18 @@ def _resolve_local_upload_path(filename: str) -> Path:
         return direct_path
 
     return Path("data") / "client_downloads" / filename
+
+
+def _skip_hash_for_ascii_transfer(session: ClientContext) -> bool:
+    """TYPE A may normalize newlines, so byte-for-byte hashes are not comparable."""
+    if session.transfer_type != "A":
+        return False
+
+    print(
+        "Automatic SHA-256 verification was skipped for TYPE A because "
+        "newline conversion can change the byte representation."
+    )
+    return True
 
 
 def handle_retr(control: ControlConnection, session: ClientContext, args: str | None) -> bool:
@@ -284,56 +371,71 @@ def handle_retr(control: ControlConnection, session: ClientContext, args: str | 
     size_match = TRANSFER_SIZE_PATTERN.search(preliminary_message)
     total_bytes = int(size_match.group(1)) if size_match else None
 
-    if peer_address is not None:
-        _send_passive_probe(data_socket, peer_address)
-    try:
-        downloaded_data = reliable_recv(
-            data_socket,
-            total_bytes=total_bytes,
-            progress_callback=(
-                make_progress_callback("Download")
-                if total_bytes is not None
-                else None
-            ),
-            expected_peer=peer_address,
-            respond_to_syn=(session.data_connection_mode == "PASSIVE"),
-        )
-    except RDTDataTimeout as error:
-        print(f"Download timed out: {error}")
+    def worker() -> None:
+        if peer_address is not None:
+            _send_passive_probe(data_socket, peer_address)
         try:
-            print(control.read_reply_line())
-        except (ConnectionError, OSError) as reply_error:
-            print(f"Could not read the final RETR reply: {reply_error}")
-        return True
+            downloaded_data = reliable_recv(
+                data_socket,
+                total_bytes=total_bytes,
+                progress_callback=(
+                    make_progress_callback("Download")
+                    if total_bytes is not None
+                    else None
+                ),
+                cancel_event=session.transfer_cancel_event,
+                expected_peer=peer_address,
+                respond_to_syn=(session.data_connection_mode == "PASSIVE"),
+            )
+        except InterruptedError:
+            print("Download cancellation requested.")
+            _read_final_transfer_reply(control, session)
+            return
+        except RDTDataTimeout as error:
+            print(f"Download timed out: {error}")
+            try:
+                _read_final_transfer_reply(control, session)
+            except (ConnectionError, OSError) as reply_error:
+                print(f"Could not read the final RETR reply: {reply_error}")
+            return
 
-    try:
-        processed_data = process_download_data(
-            downloaded_data,
-            session.transfer_type,
-            session.transfer_mode,
-        )
-        download_path.write_bytes(processed_data)
-    except (ClientDataProcessingError, OSError) as error:
-        print(f"Could not save downloaded file: {error}")
-        return True
+        try:
+            processed_data = process_download_data(
+                downloaded_data,
+                session.transfer_type,
+                session.transfer_mode,
+            )
+            download_path.write_bytes(processed_data)
+        except (ClientDataProcessingError, OSError) as error:
+            print(f"Could not save downloaded file: {error}")
+            _read_final_transfer_reply(control, session)
+            return
 
-    response = control.read_reply_line()
-    print(response)
-    try: 
-        local_hash = compute_file_hash(download_path)
-    except OSError as error:
-        print(f"Could not compute hash for downloaded file: {error}")
-        return True
+        code, aborted = _read_final_transfer_reply(control, session)
+        if aborted or code != 226:
+            return
 
-    control.send_command(f"HASH {filename}")
-    hash_response = control.read_reply_line()
-    code, message = parse_reply(hash_response)
-    if code == 200:
-        server_hash = message.split()[-1]
-        if local_hash == server_hash:
-            print(f"File {filename} downloaded successfully and verified with local hash: {local_hash}, server hash: {server_hash}.")
-        else:
-            print(f"File {filename} downloaded but hash mismatch: local {local_hash}, server {server_hash}.")
+        if _skip_hash_for_ascii_transfer(session):
+            return
+
+        try:
+            local_hash = compute_file_hash(download_path)
+        except OSError as error:
+            print(f"Could not compute hash for downloaded file: {error}")
+            return
+
+        control.send_command(f"HASH {filename}")
+        hash_response = control.read_reply_line()
+        hash_code, message = parse_reply(hash_response)
+        if hash_code == 200:
+            server_hash = message.split()[-1]
+            if local_hash == server_hash:
+                print(f"File {filename} downloaded successfully and verified with local hash: {local_hash}, server hash: {server_hash}.")
+            else:
+                print(f"File {filename} downloaded but hash mismatch: local {local_hash}, server {server_hash}.")
+
+    session.start_transfer(worker)
+    print("Transfer started in background. Enter ABOR to cancel it.")
     return True
 
 
@@ -367,34 +469,33 @@ def handle_stor(control: ControlConnection, session: ClientContext, args: str | 
     if not ready:
         return True
 
-    try:
-        peer_address = _resolve_upload_peer(
-            data_socket,
-            peer_address,
-            session,
-        )
-    except (OSError, RuntimeError, TimeoutError) as error:
-        _report_upload_channel_failure(control, error)
-        return True
+    def on_success() -> None:
+        if _skip_hash_for_ascii_transfer(session):
+            return
 
-    if not _send_upload_and_wait_for_completion(
-        control, data_socket, peer_address, upload_data
-    ):
-        return True
-    try:
-        local_hash = compute_file_hash(upload_path)
-    except OSError as error:
-        print(f"Could not compute hash for uploaded file: {error}")
-        return True
-    control.send_command(f"HASH {filename}")
-    hash_response = control.read_reply_line()
-    code, message = parse_reply(hash_response)
-    if code == 200:
-        server_hash = message.split()[-1]
-        if local_hash == server_hash:
-            print(f"File {filename} uploaded successfully and verified with local hash: {local_hash}, server hash: {server_hash}.")
-        else:
-            print(f"File {filename} uploaded but hash mismatch: local {local_hash}, server {server_hash}.")
+        try:
+            local_hash = compute_file_hash(upload_path)
+        except OSError as error:
+            print(f"Could not compute hash for uploaded file: {error}")
+            return
+        control.send_command(f"HASH {filename}")
+        hash_response = control.read_reply_line()
+        code, message = parse_reply(hash_response)
+        if code == 200:
+            server_hash = message.split()[-1]
+            if local_hash == server_hash:
+                print(f"File {filename} uploaded successfully and verified with local hash: {local_hash}, server hash: {server_hash}.")
+            else:
+                print(f"File {filename} uploaded but hash mismatch: local {local_hash}, server {server_hash}.")
+
+    _start_upload_worker(
+        control,
+        session,
+        data_socket,
+        peer_address,
+        upload_data,
+        on_success,
+    )
     return True
 
 
@@ -425,38 +526,54 @@ def handle_stou(control: ControlConnection, session: ClientContext, args: str | 
 
     control.send_command("STOU")
 
-    ready, _ = _read_preliminary_reply(control)
+    ready, preliminary_message = _read_preliminary_reply(control)
     if not ready:
         return True
 
-    try:
-        peer_address = _resolve_upload_peer(
-            data_socket,
-            peer_address,
-            session,
-        )
-    except (OSError, RuntimeError, TimeoutError) as error:
-        _report_upload_channel_failure(control, error)
-        return True
+    remote_name_match = REMOTE_NAME_PATTERN.search(preliminary_message)
+    remote_filename = remote_name_match.group(1) if remote_name_match else None
 
-    if not _send_upload_and_wait_for_completion(
-        control, data_socket, peer_address, upload_data
-    ):
-        return True
-    try:
-        local_hash = compute_file_hash(upload_path)
-    except OSError as error:
-        print(f"Could not compute hash for uploaded file: {error}")
-        return True
-    control.send_command(f"HASH {filename}")
-    hash_response = control.read_reply_line()
-    code, message = parse_reply(hash_response)
-    if code == 200:
-        server_hash = message.split()[-1]
-        if local_hash == server_hash:
-            print(f"File {filename} uploaded successfully and verified with local hash: {local_hash}, server hash: {server_hash}.")
-        else:
-            print(f"File {filename} uploaded but hash mismatch: local {local_hash}, server {server_hash}.")
+    def on_success() -> None:
+        if _skip_hash_for_ascii_transfer(session):
+            return
+
+        if remote_filename is None:
+            print(
+                "Upload completed, but the server did not return REMOTE_NAME; "
+                "automatic hash verification was skipped."
+            )
+            return
+
+        try:
+            local_hash = compute_file_hash(upload_path)
+        except OSError as error:
+            print(f"Could not compute hash for uploaded file: {error}")
+            return
+
+        control.send_command(f"HASH {remote_filename}")
+        hash_response = control.read_reply_line()
+        code, message = parse_reply(hash_response)
+        if code == 200:
+            server_hash = message.split()[-1]
+            if local_hash == server_hash:
+                print(
+                    f"File {filename} was stored as {remote_filename} and verified "
+                    f"with local hash: {local_hash}, server hash: {server_hash}."
+                )
+            else:
+                print(
+                    f"File {filename} was stored as {remote_filename}, but hash "
+                    f"mismatched: local {local_hash}, server {server_hash}."
+                )
+
+    _start_upload_worker(
+        control,
+        session,
+        data_socket,
+        peer_address,
+        upload_data,
+        on_success,
+    )
     return True
 
 
@@ -491,36 +608,28 @@ def handle_appe(control: ControlConnection, session: ClientContext, args: str | 
     if not ready:
         return True
 
-    try:
-        peer_address = _resolve_upload_peer(
-            data_socket,
-            peer_address,
-            session,
-        )
-    except (OSError, RuntimeError, TimeoutError) as error:
-        _report_upload_channel_failure(control, error)
-        return True
-
-    if not _send_upload_and_wait_for_completion(
-        control, data_socket, peer_address, upload_data
-    ):
-        return True
-    try:
-        local_hash = compute_file_hash(upload_path)
-    except OSError as error:
-        print(f"Could not compute hash for uploaded file: {error}")
-        return True
-    control.send_command(f"HASH {filename}")
-    hash_response = control.read_reply_line()
-    code, message = parse_reply(hash_response)
-    if code == 200:
-        server_hash = message.split()[-1]
-        if local_hash == server_hash:
-            print(f"File {filename} uploaded successfully and verified with local hash: {local_hash}, server hash: {server_hash}.")
-        else:
-            print(f"File {filename} uploaded but hash mismatch: local {local_hash}, server {server_hash}.")
+    _start_upload_worker(
+        control,
+        session,
+        data_socket,
+        peer_address,
+        upload_data,
+        lambda: None,
+    )
     return True
 
-def handle_abor(control: ControlConnection) -> bool:
+def handle_abor(control: ControlConnection, session: ClientContext) -> bool:
+    abort_status = session.request_transfer_abort()
+    if abort_status == "REQUESTED":
+        control.send_command("ABOR")
+        print("Abort request sent. Waiting for the transfer worker to stop...")
+        return True
+    if abort_status == "PENDING":
+        print("An abort request is already pending.")
+        return True
+    if abort_status == "FINALIZING":
+        print("The transfer is already finalizing; ABOR was not sent.")
+        return True
+
     send_and_print(control, "ABOR")
     return True

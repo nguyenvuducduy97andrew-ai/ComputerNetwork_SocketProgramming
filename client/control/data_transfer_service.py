@@ -2,6 +2,8 @@ import os
 import zlib
 from pathlib import Path
 
+from shared.block_mode import BlockModeError, decode_blocks, encode_blocks
+
 
 class ClientDataProcessingError(Exception):
     """Raised when transferred bytes cannot be converted as configured."""
@@ -23,8 +25,11 @@ def _apply_outgoing_type(data: bytes, transfer_type: str) -> bytes:
 
 
 def _apply_outgoing_mode(data: bytes, transfer_mode: str) -> bytes:
-    if transfer_mode in {"S", "B"}:
+    if transfer_mode == "S":
         return data
+
+    if transfer_mode == "B":
+        return encode_blocks(data)
 
     if transfer_mode == "C":
         return zlib.compress(data)
@@ -49,7 +54,12 @@ def process_download_data(
     transfer_type: str,
     transfer_mode: str,
 ) -> bytes:
-    if transfer_mode == "C":
+    if transfer_mode == "B":
+        try:
+            data = decode_blocks(data)
+        except BlockModeError as exc:
+            raise ClientDataProcessingError(str(exc)) from exc
+    elif transfer_mode == "C":
         try:
             data = zlib.decompress(data)
         except zlib.error as exc:

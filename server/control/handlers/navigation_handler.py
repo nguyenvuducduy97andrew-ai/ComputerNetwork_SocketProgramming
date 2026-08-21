@@ -171,7 +171,10 @@ def handle_list(session: ClientSession, args: str | None) -> CommandReplies:
     except OSError as e:
         yield CommandReply(FTPReplyCode.FILE_UNAVAILABLE, "Failed to list directory.")
         return
-    yield CommandReply(FTPReplyCode.PRELIMINARY_OK, f"Opening data connection for directory listing. BYTES= {len(listing_data)}")
+    yield CommandReply(
+        FTPReplyCode.PRELIMINARY_OK,
+        f"Opening data connection for directory listing. BYTES={len(listing_data)}",
+    )
     session.start_transfer(command="LIST", file_path=target_path, direction="SEND", expected_size=len(listing_data))
     def worker() -> str:
         try:
@@ -206,23 +209,38 @@ def handle_nlst(session: ClientSession, args: str | None) -> str:
         return FTPReplyCode.FILE_UNAVAILABLE.format("Failed to list directory.")
 
 def handle_stat(session: ClientSession, args: str | None) -> str:
-    print(f"[navigation_handler] Handling STAT command for directory: {args!r}")
+    print(f"[navigation_handler] Handling STAT command for path: {args!r}")
     try:
-        target_directory = (
-            require_directory(session, args)
+        target_path = (
+            resolve_session_path(session, args)
             if args
             else session.get_absolute_current_directory()
         )
     except SessionPathError as exc:
         return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
 
+    if not target_path.exists():
+        return FTPReplyCode.FILE_UNAVAILABLE.format(
+            "Path does not exist or access denied."
+        )
+
     try:
-        entries = list(target_directory.iterdir())
-        listing = " | ".join(entry.name for entry in entries)
+        if target_path.is_file():
+            listing = format_list_entry(target_path)
+        elif target_path.is_dir():
+            entries = sorted(
+                target_path.iterdir(),
+                key=lambda entry: entry.name.lower(),
+            )
+            listing = " | ".join(format_list_entry(entry) for entry in entries)
+        else:
+            return FTPReplyCode.FILE_UNAVAILABLE.format(
+                "Target is neither a file nor a directory."
+            )
         return FTPReplyCode.COMMAND_OK.format(listing)
-    except Exception as e:
-        print(f"[navigation_handler] Error getting status of directory: {e}")
-        return FTPReplyCode.FILE_UNAVAILABLE.format("Failed to get status of directory.")
+    except OSError as exc:
+        print(f"[navigation_handler] Error getting status of path: {exc}")
+        return FTPReplyCode.FILE_UNAVAILABLE.format("Failed to get path status.")
 
 
 def handle_size(session: ClientSession, args: str | None) -> str:
@@ -257,10 +275,10 @@ def handle_mdtm(session: ClientSession, args: str | None) -> str:
     try:
         modified_at = datetime.fromtimestamp(
             target_file.stat().st_mtime,
-            #tz=timezone.utc, Strictly speaking, MDTM should return the modification time in UTC, but for simplicity, we will use local time here.
+            tz=timezone.utc,
         )
         return FTPReplyCode.FILE_STATUS.format(
-            modified_at.strftime("%Y/%m/%d-%H:%M:%S")
+            modified_at.strftime("%Y%m%d%H%M%S")
         )
     except Exception as e:
         print(f"[navigation_handler] Error getting modification time of file: {e}")

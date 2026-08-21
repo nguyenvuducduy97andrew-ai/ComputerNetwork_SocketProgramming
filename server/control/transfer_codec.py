@@ -4,6 +4,7 @@ import os
 import zlib
 
 from server.control.transfer_errors import DataTransferError
+from shared.block_mode import BlockModeError, decode_blocks, encode_blocks
 
 
 def normalize_transfer_type(transfer_type: str) -> str:
@@ -42,10 +43,13 @@ def encode_for_transfer(
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
         data = normalized.replace("\n", "\r\n").encode("utf-8")
 
+    if transfer_mode == "B":
+        return encode_blocks(data)
+
     if transfer_mode == "C": #MODE C: nén dữ liệu
         return zlib.compress(data)
 
-    # MODE S và MODE B đều là các chế độ truyền dữ liệu thông thường, không cần xử lý đặc biệt.
+    # MODE S giữ nguyên payload sau bước chuyển đổi TYPE.
     return data
 
 
@@ -58,7 +62,12 @@ def decode_from_transfer(
     transfer_type = normalize_transfer_type(transfer_type)
     transfer_mode = normalize_transfer_mode(transfer_mode)
 
-    if transfer_mode == "C":
+    if transfer_mode == "B":
+        try:
+            data = decode_blocks(data)
+        except BlockModeError as exc:
+            raise DataTransferError(str(exc)) from exc
+    elif transfer_mode == "C":
         try:
             data = zlib.decompress(data) #MODE C: giải nén dữ liệu nén
         except zlib.error as exc:

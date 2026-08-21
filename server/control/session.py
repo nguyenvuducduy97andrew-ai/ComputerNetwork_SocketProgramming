@@ -47,6 +47,7 @@ class ClientSession:
     cancel_event: threading.Event = field(default_factory=threading.Event) # Event để báo hủy truyền file khi Client gửi lệnh ABOR. Thread truyền file sẽ kiểm tra event này và dừng truyền nếu event được set.
     transfer_lock: threading.Lock = field(default_factory=threading.Lock) # Lock để bảo vệ việc truy cập và thay đổi trạng thái liên quan đến truyền file (transfer_in_progress, current_transfer_file, current_transfer_direction, expected_transfer_size, transferred_bytes, transfer_thread). Tránh việc nhiều thread cùng thay đổi trạng thái này gây lỗi.
     suppress_transfer_reply: bool = False # True nếu không gửi reply về Client sau khi truyền file xong (dùng khi chuẩn bị đóng control_conn). False nếu gửi reply về Client sau khi truyền file xong.
+    suppress_current_transfer_reply: bool = False # True khi ABOR đã tự gửi reply và worker không được gửi thêm reply cuối.
     cleanup_started: bool = False # True nếu đã bắt đầu dọn dẹp session (cleanup), False nếu chưa. Dùng để tránh việc dọn dẹp nhiều lần gây lỗi.
 
     def get_absolute_current_directory(self)->Path:
@@ -82,6 +83,7 @@ class ClientSession:
         self.current_transfer_direction = direction
         self.expected_transfer_size = expected_size
         self.transferred_bytes = 0
+        self.suppress_current_transfer_reply = False
         self.cancel_event.clear()
 
     def finish_transfer(self) -> None:
@@ -95,15 +97,25 @@ class ClientSession:
         self.current_transfer_direction = None
         self.expected_transfer_size = 0
         self.transferred_bytes = 0
+        self.suppress_current_transfer_reply = False
         self.cancel_event.clear()
 
-    def request_abort(self) -> None:
+    def request_abort(self, *, suppress_worker_reply: bool = False) -> bool:
         """
-        Client gửi lệnh ABOR -> gọi hàm này.
+        Yêu cầu worker hiện tại dừng lại.
+
+        Trả về False nếu transfer đã kết thúc. Khi ABOR sẽ tự trả lời trên
+        control channel, ``suppress_worker_reply`` ngăn worker gửi thêm một
+        reply 426 muộn làm lệch thứ tự reply của client.
         """
-        print(f"[ClientSession] Requesting abort of transfer. File: {self.current_transfer_file}, Direction: {self.current_transfer_direction}")
-        if self.transfer_in_progress:
+        with self.transfer_lock:
+            if not self.transfer_in_progress:
+                return False
+            print(f"[ClientSession] Requesting abort of transfer. File: {self.current_transfer_file}, Direction: {self.current_transfer_direction}")
+            if suppress_worker_reply:
+                self.suppress_current_transfer_reply = True
             self.cancel_event.set()
+            return True
 
     def register_data_socket(self, data_socket: socket) -> None:
         """
@@ -143,7 +155,7 @@ class ClientSession:
         with self.conn_send_lock:
             self.suppress_transfer_reply = True
 
-        self.request_abort()
+        self.request_abort(suppress_worker_reply=True)
         self.close_current_data_socket()
 
     def send_transfer_reply(self, reply: str) -> bool:
@@ -228,12 +240,13 @@ class ClientSession:
                     final_reply = FTPReplyCode.TRANSFER_ABORTED.format("Transfer aborted.")
                 except Exception as exc:
                     final_reply = FTPReplyCode.TRANSFER_ABORTED.format(f"Transfer failed: {exc}")
-                finally:
-                    self.finish_transfer()
-
-                self.send_transfer_reply(final_reply)
-
                 with self.transfer_lock:
+                    # Giữ transfer_in_progress=True cho tới khi reply cuối đã
+                    # được gửi. Nhờ vậy ABOR hoặc thắng race và thay thế reply
+                    # của worker, hoặc đến sau reply cuối một cách xác định.
+                    if not self.suppress_current_transfer_reply:
+                        self.send_transfer_reply(final_reply)
+                    self.finish_transfer()
                     self.transfer_thread = None
 
             thread = threading.Thread(target=_run, daemon=True)

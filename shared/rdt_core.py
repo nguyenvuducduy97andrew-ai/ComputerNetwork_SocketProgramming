@@ -122,15 +122,22 @@ def reliable_send(
     if progress_callback is not None:
         progress_callback(0, total_bytes)
 
-    # Phân đoạn dữ liệu thành danh sách các gói tin
-    chunks = [raw_data[i:i + MAX_PAYLOAD] for i in range(0, len(raw_data), MAX_PAYLOAD)]
-    total_packets = len(chunks)
+    # Chỉ giữ một bản payload trong RAM. Packet được đóng gói theo nhu cầu
+    # thay vì tạo thêm danh sách chunks và packets cho toàn bộ file.
+    total_packets = max(
+        1,
+        (total_bytes + MAX_PAYLOAD - 1) // MAX_PAYLOAD,
+    )
 
-    if total_packets == 0:
-        chunks = [b'']
-        total_packets = 1
-
-    packets = [pack_packet(seq = i, ack = 0, flags = FLAG_DATA, data = chunks[i]) for i in range(total_packets)]
+    def make_data_packet(sequence_number: int) -> bytes:
+        start = sequence_number * MAX_PAYLOAD
+        payload = raw_data[start:start + MAX_PAYLOAD]
+        return pack_packet(
+            seq=sequence_number,
+            ack=0,
+            flags=FLAG_DATA,
+            data=payload,
+        )
 
     # Khởi tạo trạng thái cửa sổ trượt (Sliding Window)
     base = 0
@@ -146,7 +153,7 @@ def reliable_send(
         # Gửi tất cả các gói tin còn nằm trong phạm vi Cửa sổ
         while next_seq_num < base + WINDOW_SIZE and next_seq_num < total_packets:
             _raise_if_cancelled(cancel_event)
-            udp_socket.sendto(packets[next_seq_num], dest_addr)
+            udp_socket.sendto(make_data_packet(next_seq_num), dest_addr)
             if base == next_seq_num:
                 timer_start = time.monotonic()  # Bật Timer cho gói tin nhỏ nhất chưa ACK
             next_seq_num += 1
@@ -155,7 +162,10 @@ def reliable_send(
         try:
             resp, sender_addr = udp_socket.recvfrom(BUFFER_SIZE)
             if sender_addr == expected_peer and verify_checksum(resp):
-                unpacked = unpack_packet(resp)
+                try:
+                    unpacked = unpack_packet(resp)
+                except ValueError:
+                    continue
                 if unpacked['flags'] & FLAG_ACK:
                     ack_num = unpacked['ack']
 
@@ -185,7 +195,7 @@ def reliable_send(
                                     f"DATA sequence {base} was not acknowledged "
                                     f"after {DATA_MAX_RETRIES} retries."
                                 )
-                            udp_socket.sendto(packets[base], dest_addr)
+                            udp_socket.sendto(make_data_packet(base), dest_addr)
                             data_retry_count += 1
                             timer_start = time.monotonic()
                             dup_ack_count = 0
@@ -201,7 +211,7 @@ def reliable_send(
                 )
             for i in range(base, next_seq_num):
                 _raise_if_cancelled(cancel_event)
-                udp_socket.sendto(packets[i], dest_addr)
+                udp_socket.sendto(make_data_packet(i), dest_addr)
             data_retry_count += 1
             timer_start = time.monotonic()
 
@@ -265,7 +275,7 @@ def reliable_recv(
     if expected_peer is not None:
         expected_peer = _normalize_peer_address(expected_peer)
 
-    received_chunks = {}
+    received_data = bytearray()
     expected_seq = 0
     received_bytes = 0
     receive_timeout_count = 0
@@ -286,7 +296,10 @@ def reliable_recv(
             if not verify_checksum(packet_bytes):
                 continue
                 
-            unpacked = unpack_packet(packet_bytes)
+            try:
+                unpacked = unpack_packet(packet_bytes)
+            except ValueError:
+                continue
             flags = unpacked['flags']
             seq = unpacked['seq']
 
@@ -325,7 +338,7 @@ def reliable_recv(
                 receive_timeout_count = 0
                 if seq == expected_seq:
                     # Nhận đúng gói mong đợi -> Đưa vào bộ đệm và tăng Sequence kỳ vọng
-                    received_chunks[seq] = unpacked['payload']
+                    received_data.extend(unpacked['payload'])
                     expected_seq += 1
                     received_bytes += len(unpacked['payload'])
 
@@ -354,20 +367,14 @@ def reliable_recv(
 
     _raise_if_cancelled(cancel_event)
 
-    # Ráp lại toàn bộ payload theo đúng thứ tự Sequence Number
-    full_data = bytearray()
-    for i in range(expected_seq):
-        if i in received_chunks:
-            full_data.extend(received_chunks[i])
-
     if save_file_path:
         dir_name = os.path.dirname(save_file_path)
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
         with open(save_file_path, 'wb') as f:
-            f.write(full_data)
+            f.write(received_data)
 
     if progress_callback is not None and total_bytes is not None:
         progress_callback(total_bytes, total_bytes)
 
-    return bytes(full_data)
+    return bytes(received_data)

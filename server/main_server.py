@@ -7,6 +7,10 @@ from server.control.ftp_codes import FTPReplyCode
 from server.control.command_handler import handle_command
 from server.control.session import ClientSession
 
+
+DEFAULT_SERVER_ROOT = Path("data") / "server_storage"
+
+
 # Control thread:
 def handle_client(conn: socket.socket, addr: tuple[str, int], server_root: Path) -> None:
     """Per-connection handler: send welcome, receive commands, respond."""
@@ -76,7 +80,7 @@ def handle_client(conn: socket.socket, addr: tuple[str, int], server_root: Path)
 
 
 def run_server(host: str = '0.0.0.0', port: int = 2121) -> None:
-    server_root = Path("data").resolve()
+    server_root = DEFAULT_SERVER_ROOT.resolve()
     server_root.mkdir(parents=True, exist_ok=True)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

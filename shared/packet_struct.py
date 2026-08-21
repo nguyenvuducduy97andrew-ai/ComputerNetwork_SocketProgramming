@@ -24,6 +24,11 @@ def unpack_packet(packet_bytes: bytes) -> dict:
 
     seq, ack, checksum, length, flags = struct.unpack(HEADER_FORMAT, header_bytes)
 
+    if length != len(payload):
+        raise ValueError(
+            "Độ dài payload thực tế không khớp trường length trong header!"
+        )
+
     return {
         'seq': seq,
         'ack': ack,

@@ -13,15 +13,15 @@ Thiết kế chính:
 - Transfer workflow: handlers trả reply sơ bộ (`125`/`150`), khởi worker thread thực hiện UDP/RDT, worker gửi reply hoàn tất (`226`/`426`) qua control socket.
 
 Các điểm cần biết khi vận hành và kiểm thử:
-- Server root theo code là `data/` (server tạo nếu chưa tồn tại). Client lưu download vào `data/client_downloads/`.
-- Trước `LIST`/`RETR`/`STOR` phải cấu hình data channel bằng `PASV` hoặc `PORT`.
-- `HASH <file>` trả SHA-256 từ server; client cũng tính hash cục bộ để so sánh sau `RETR`.
+- Server root là `data/server_storage/`; client lưu download vào vùng riêng `data/client_downloads/`.
+- Trước mỗi `LIST`/`RETR`/`STOR`/`STOU`/`APPE` phải cấu hình data channel mới bằng `PASV` hoặc `PORT`.
+- `HASH <file>` trả SHA-256 từ server; client so sánh hash sau `RETR`, `STOR` và `STOU` ở `TYPE I`. `TYPE A` bỏ qua byte hash vì có chuẩn hóa newline; `APPE` không tự hash vì payload local chỉ là phần nối thêm.
 - Các lệnh hỗ trợ đầy đủ: xác thực (`USER`/`PASS`), quản lý file (`STOR`/`RETR`/`DELE`/`RNFR`/`RNTO`/`HASH`), listing (`LIST`/`NLST`) và thiết lập truyền (`TYPE`/`MODE`/`PORT`/`PASV`).
 
 Hạn chế vận hành quan trọng:
-- Transfer có thể nạp payload lớn vào RAM — không tối ưu cho file lớn.
+- Codec vẫn xử lý toàn payload trong RAM; RDT không còn giữ thêm danh sách chunks/packets nhưng hệ thống vẫn phù hợp nhất với file cỡ vừa.
 - Chưa có congestion control hay dải UDP cố định cho NAT traversal.
-- `ABOR`/cleanup có race condition giữa control thread và worker (reply ordering không tuyệt đối đảm bảo).
+- `ABOR` đánh dấu hủy, đóng data socket và thay thế final reply của worker bằng một reply xác nhận duy nhất; worker không gửi thêm reply muộn làm lệch control channel.
 
 Kiểm thử:
 - Các test nằm trong `tests/` (checksum, RDT lossy, active upload, peer filtering, cancellation, upload completion). Chạy từ root:
@@ -43,7 +43,7 @@ Mục đích của phần này là mô tả chi tiết hành vi, API nội bộ,
 - `server/control/*`: handlers, session, ftp_codes, data_transfer_service (facade server-side), command_result.
 - `client/main_client.py`: entrypoint client, mở TCP control, vòng CLI `ftp>`.
 - `client/control/*`: `client_control.py` (TCP helpers), `command_handler.py` (dispatch CLI -> handlers), `data_transfer_service.py` (client-side payload processing), `context.py` (ClientContext), `cli_monitor.py` (progress UI).
-- `shared/*`: `constants.py` (packet/header/TCP/UDP constants), `packet_struct.py` (pack/unpack header+payload), `rdt_core.py` (reliable send/recv), `checksum.py` (file SHA-256 helper used by `HASH`).
+- `shared/*`: `constants.py` (packet/header/TCP/UDP constants), `packet_struct.py` (pack/unpack header+payload), `rdt_core.py` (reliable send/recv), `block_mode.py` (MODE B framing), `checksum.py` (file SHA-256 helper used by `HASH`).
 
 2) Control channel (TCP) — chi tiết
 
@@ -56,7 +56,7 @@ Mục đích của phần này là mô tả chi tiết hành vi, API nội bộ,
 
 - Authentication: `USER <name>` → server trả 331 hoặc 530; `PASS <pwd>` → 230 on success.
 - Commands allowed before login: `USER`, `PASS`, `QUIT`, `NOOP`, `HELP`.
-- Commands during transfer: khi `session.transfer_in_progress` server chỉ cho phép `ABOR`, `NOOP`, `STAT`, `QUIT` — các lệnh khác trả 503.
+- Commands during transfer: server cho phép `ABOR`, `NOOP`, `STAT`, `QUIT`; CLI client chỉ nhận `ABOR` trong lúc worker dữ liệu chạy để giữ một nơi duy nhất đọc reply trên control channel.
 - Transfer commands (`RETR`, `STOR`, `STOU`, `APPE`) luôn:
 	1. validate path/permissions
 	2. validate data connection config via `validate_data_connection(session, direction=...)`
@@ -64,6 +64,9 @@ Mục đích của phần này là mô tả chi tiết hành vi, API nội bộ,
 	4. yield preliminary reply `125`/`150` (includes BYTES=nnn for RETR)
 	5. start worker thread `session.run_transfer(worker_fn)`
 	6. worker performs UDP/RDT, sets `session.transferred_bytes`, and sends final reply `226` (or `426`/`451` on error)
+- `STOU` sinh tên `file_<uuid>.dat`, công bố tên qua `REMOTE_NAME` trong cả reply `150` và `226`; client dùng tên này cho `HASH` sau upload.
+- `APPE` không chạy `HASH` tự động. Reply hoàn tất chứa `APPENDED_BYTES` và `FINAL_SIZE` để phân biệt lượng dữ liệu vừa nối với kích thước toàn bộ file.
+- `MODE B` dùng header 3 byte `descriptor:uint8 + count:uint16`, theo sau bởi data block; block cuối mang descriptor EOF.
 
 4) Session lifecycle và state transitions
 
@@ -82,8 +85,8 @@ Mục đích của phần này là mô tả chi tiết hành vi, API nội bộ,
 	- RTO = TIMEOUT (0.3s); DATA_MAX_RETRIES = 10 và bộ đếm reset khi cumulative ACK làm cửa sổ tiến lên.
 	- Receiver dừng với `RDTDataTimeout` sau 10 RTO liên tiếp không nhận DATA hợp lệ; sender cũng phát lỗi này khi DATA hết retry.
 	- FIN handshake có FIN_MAX_RETRIES = 10 và receiver linger 0.6s.
-	- `reliable_send()` accepts bytes or a file path string; segments into MAX_PAYLOAD chunks, packs, sends, and monitors ACKs.
-	- `reliable_recv()` reassembles chunks, responds ACKs, and returns full payload bytes (or writes to file if path passed).
+	- `reliable_send()` giữ một bản payload, đóng gói từng packet theo nhu cầu và theo dõi ACK mà không nhân đôi toàn bộ chunks/packets trong RAM.
+	- `reliable_recv()` chỉ append DATA đúng thứ tự vào một byte buffer, responds ACKs, và trả full payload bytes (hoặc ghi file nếu có path).
 
 6) Active vs Passive (handshake details)
 
@@ -98,7 +101,7 @@ Mục đích của phần này là mô tả chi tiết hành vi, API nội bộ,
 
 7) File paths and where files are read/written
 
-- Server root: `server_root = Path('data').resolve()` in `run_server()`; this is the authoritative root for `RETR`, `STOR`, `DELE`, `RNFR`.
+- Server root: `server_root = (Path('data') / 'server_storage').resolve()` trong `run_server()`; đây là root cho `RETR`, `STOR`, `DELE`, `RNFR`.
 - Client upload resolution: client `handle_stor` uses `_resolve_local_upload_path()` which checks given path directly first (absolute/relative), otherwise falls back to `data/client_downloads/<filename>`.
 - Client download destination: `data/client_downloads/<filename>` (created if missing).
 
@@ -117,6 +120,8 @@ Mục đích của phần này là mô tả chi tiết hành vi, API nội bộ,
 - `tests/test_active_upload.py`: mô phỏng upload active end-to-end.
 - `tests/test_rdt_peer_filtering.py`: đảm bảo receiver loại bỏ gói từ peer không mong đợi.
 - `tests/test_transfer_cancellation_cleanup.py`: kiểm tra `ABOR` và cleanup thread/socket/session.
+- `tests/test_appe_stou.py`: kiểm tra `APPE` không hash sai phạm vi, metadata kích thước, tên UUID của `STOU` và hash theo `REMOTE_NAME`.
+- `tests/test_demo_readiness.py`: kiểm tra MODE B hai chiều, storage tách biệt, HELP STOU, STAT file, MDTM UTC và hash semantics của TYPE A.
 
 Chạy toàn bộ suite:
 ```powershell
@@ -130,28 +135,30 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - Terminal A (server):
 ```powershell
 cd 'c:\Users\PC\OneDrive\Máy tính\MMT_Projects_SocketPrograming'
-python server\main_server.py 2>&1 | Tee-Object -FilePath logs\server_run.log
+New-Item -ItemType Directory -Force logs | Out-Null
+python -u -m server.main_server 2>&1 | Tee-Object -FilePath logs\server_run.log
 ```
 	- Chụp/ghi lại dòng: "Starting Hybrid FTP Server on 0.0.0.0:2121" và "Server root directory: <abs path>".
 
 - Terminal B (client):
 ```powershell
 cd 'c:\Users\PC\OneDrive\Máy tính\MMT_Projects_SocketPrograming'
-python client\main_client.py --host localhost --port 2121 2>&1 | Tee-Object -FilePath logs\client_run.log
+New-Item -ItemType Directory -Force logs | Out-Null
+python -u -m client.main_client --host localhost --port 2121 2>&1 | Tee-Object -FilePath logs\client_run.log
 ```
 	- Ở prompt `ftp>` thực hiện:
 		1. `USER admin` — chụp reply (331)
 		2. `PASS 123456` — chụp reply (230)
 		3. `TYPE I` / `MODE S`
 		4. `PASV` — chụp reply `227 ... UDP_PORT=<port>` (ghi port)
-		5. `STOR data\newdir\abc.txt` — chụp preliminary `150`/`125` và progress bar; sau khi hoàn thành chụp final `226`.
-		6. Trên server terminal: chụp log nơi `receive`/`Started thread`/`Sent reply 226` xuất hiện; liệt kê file `Get-ChildItem -Path data\newdir` rồi chụp màn hình.
-		7. Tương tự cho `PASV` + `RETR newdir\abc.txt` — chụp các reply và kiểm tra file ở `data\client_downloads\newdir\abc.txt`.
+		5. `STOR abcabc.txt` — client đọc `data\client_downloads\abcabc.txt`; chụp preliminary `150`, progress bar và final `226`.
+		6. Trên server terminal: chụp log nơi `Started thread`/`Sent reply 226` xuất hiện; kiểm tra `data\server_storage\abcabc.txt`.
+		7. Chạy lại `PASV`, rồi `RETR abcabc.txt`; kiểm tra file tải về ở `data\client_downloads\abcabc.txt`.
 
 - Kiểm tra checksum:
 ```powershell
-Get-FileHash data\newdir\abc.txt -Algorithm SHA256
-Get-FileHash data\client_downloads\newdir\abc.txt -Algorithm SHA256
+Get-FileHash data\server_storage\abcabc.txt -Algorithm SHA256
+Get-FileHash data\client_downloads\abcabc.txt -Algorithm SHA256
 ```
 	- Chụp màn hình giá trị hash và lưu vào minh chứng.
 
@@ -162,18 +169,11 @@ Select-String -Path logs\server_run.log -Pattern 'PASV|PORT|STOR|RETR|125|150|22
 ```
 	- (Nếu bạn không muốn tạo files tự động, thay `Out-File` bằng copy/paste thủ công.)
 
-11) Cách đổi server root an toàn (nếu bạn muốn dùng `server_storage` thay `data`)
+11) Bố cục storage khi chạy cùng máy
 
-- Thay đổi nhanh (không sửa code): move files từ `data/server_storage` vào `data` hoặc tạo symlink `server_storage` -> `data`.
-- Nếu muốn sửa code: mở `server/main_server.py` và thay dòng:
-```python
-server_root = Path("data").resolve()
-```
-	thành
-```python
-server_root = Path("server_storage").resolve()
-```
-	rồi restart server.
+- Server chỉ truy cập `data/server_storage/` thông qua session path resolver.
+- Client tìm file upload trực tiếp theo argument trước; nếu không thấy thì fallback về `data/client_downloads/<filename>`.
+- Việc tách hai root giúp `LIST` phía server không vô tình hiển thị file download cục bộ của client.
 
 12) Debugging & phát triển
 
