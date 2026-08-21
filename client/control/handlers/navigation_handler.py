@@ -3,7 +3,7 @@
 
 from shared.constants import FLAG_SYN
 from shared.packet_struct import pack_packet
-from shared.rdt_core import reliable_recv
+from shared.rdt_core import RDTDataTimeout, reliable_recv
 
 from client.control.client_control import ControlConnection, parse_reply
 from client.control.context import ClientContext
@@ -75,7 +75,19 @@ def handle_list(control: ControlConnection, session: ClientContext, args: str | 
 
     expected_peer = session.data_peer_address if session.data_connection_mode == "PASSIVE" else None
 
-    listing_data = reliable_recv(data_socket, expected_peer=expected_peer, respond_to_syn=(session.data_connection_mode == "PASSIVE"))
+    try:
+        listing_data = reliable_recv(
+            data_socket,
+            expected_peer=expected_peer,
+            respond_to_syn=(session.data_connection_mode == "PASSIVE"),
+        )
+    except RDTDataTimeout as error:
+        print(f"Directory listing timed out: {error}")
+        try:
+            print(control.read_reply_line())
+        except (ConnectionError, OSError) as reply_error:
+            print(f"Could not read the final LIST reply: {reply_error}")
+        return True
     listing = listing_data.decode("utf-8", errors="replace")
 
     if listing:

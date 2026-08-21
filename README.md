@@ -100,7 +100,7 @@ Hoặc chạy từng test cụ thể với `python -m unittest -v tests.test_act
 
 ## Điều cần biết (tổng quát, không theo thời gian)
 
-- Data channel là UDP + RDT (Go-Back-N, cumulative ACK, fast retransmit); cửa sổ cố định tại 8 packets.
+- Data channel là UDP + RDT (Go-Back-N, cumulative ACK, fast retransmit); cửa sổ cố định tại 8 packets. DATA dừng sau tối đa 10 lần retry liên tiếp không có ACK tiến triển; receiver cũng thoát sau 10 RTO liên tiếp không nhận được DATA hợp lệ.
 - Mỗi session chỉ có một transfer worker; control thread cho phép một số lệnh (ví dụ `ABOR`) trong lúc transfer.
 - Hạn chế chính: upload/download có thể tiêu tốn RAM cho payload lớn; chưa có congestion control hay dải port cố định cho NAT traversal.
 

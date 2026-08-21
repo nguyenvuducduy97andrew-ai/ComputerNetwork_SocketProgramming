@@ -79,7 +79,9 @@ Mục đích của phần này là mô tả chi tiết hành vi, API nội bộ,
 	- Sender: Go-Back-N with WINDOW_SIZE = 8.
 	- Receiver: cumulative ACK; send ACK with ack = next expected seq.
 	- Fast retransmit on DUP_ACK_THRESHOLD = 3.
-	- RTO = TIMEOUT (0.3s); FIN handshake (send FIN repeatedly until FIN ack).
+	- RTO = TIMEOUT (0.3s); DATA_MAX_RETRIES = 10 và bộ đếm reset khi cumulative ACK làm cửa sổ tiến lên.
+	- Receiver dừng với `RDTDataTimeout` sau 10 RTO liên tiếp không nhận DATA hợp lệ; sender cũng phát lỗi này khi DATA hết retry.
+	- FIN handshake có FIN_MAX_RETRIES = 10 và receiver linger 0.6s.
 	- `reliable_send()` accepts bytes or a file path string; segments into MAX_PAYLOAD chunks, packs, sends, and monitors ACKs.
 	- `reliable_recv()` reassembles chunks, responds ACKs, and returns full payload bytes (or writes to file if path passed).
 

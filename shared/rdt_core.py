@@ -13,6 +13,7 @@ from .constants import (
     WINDOW_SIZE,
     DUP_ACK_THRESHOLD,
     FLAG_SYN,
+    DATA_MAX_RETRIES,
     FIN_MAX_RETRIES,
     FIN_LINGER_TIMEOUT,
 )
@@ -27,6 +28,10 @@ ProgressCallback = Callable[[int, int], None] #Mục đích: callback để báo
 
 class RDTTeardownTimeout(TimeoutError):
     """Raised when the peer never confirms the FIN handshake."""
+
+
+class RDTDataTimeout(TimeoutError):
+    """Raised when DATA cannot make progress within the retry limit."""
 
 
 def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
@@ -131,7 +136,7 @@ def reliable_send(
     base = 0
     next_seq_num = 0
     dup_ack_count = 0
-    last_ack_received = -1
+    data_retry_count = 0
     timer_start = 0.0
 
     udp_socket.settimeout(0.01)  # Non-blocking polling cho việc nhận ACK liên tục
@@ -149,9 +154,7 @@ def reliable_send(
         # Lắng nghe ACK phản hồi từ phía Nhận
         try:
             resp, sender_addr = udp_socket.recvfrom(BUFFER_SIZE)
-            if sender_addr != expected_peer:
-                continue
-            if verify_checksum(resp):
+            if sender_addr == expected_peer and verify_checksum(resp):
                 unpacked = unpack_packet(resp)
                 if unpacked['flags'] & FLAG_ACK:
                     ack_num = unpacked['ack']
@@ -169,6 +172,7 @@ def reliable_send(
                                 total_bytes,
                             )
                         dup_ack_count = 0
+                        data_retry_count = 0
                         if base < next_seq_num:
                             timer_start = time.monotonic()  # Reset timer cho gói chưa ACK tiếp theo
                     elif ack_num == base:
@@ -176,7 +180,13 @@ def reliable_send(
                         dup_ack_count += 1
                         if dup_ack_count == DUP_ACK_THRESHOLD:
                             # FAST RETRANSMIT: Gửi lại ngay lập tức gói 'base' bị mất
+                            if data_retry_count >= DATA_MAX_RETRIES:
+                                raise RDTDataTimeout(
+                                    f"DATA sequence {base} was not acknowledged "
+                                    f"after {DATA_MAX_RETRIES} retries."
+                                )
                             udp_socket.sendto(packets[base], dest_addr)
+                            data_retry_count += 1
                             timer_start = time.monotonic()
                             dup_ack_count = 0
         except socket.timeout:
@@ -184,9 +194,15 @@ def reliable_send(
 
         # Kiểm tra Timeout (RTO) -> Truyền lại toàn bộ gói trong cửa sổ hiện tại (Go-Back-N)
         if base < next_seq_num and (time.monotonic() - timer_start) > TIMEOUT:
+            if data_retry_count >= DATA_MAX_RETRIES:
+                raise RDTDataTimeout(
+                    f"DATA sequence {base} was not acknowledged "
+                    f"after {DATA_MAX_RETRIES} retries."
+                )
             for i in range(base, next_seq_num):
                 _raise_if_cancelled(cancel_event)
                 udp_socket.sendto(packets[i], dest_addr)
+            data_retry_count += 1
             timer_start = time.monotonic()
 
     if progress_callback is not None:
@@ -252,7 +268,8 @@ def reliable_recv(
     received_chunks = {}
     expected_seq = 0
     received_bytes = 0
-    udp_socket.settimeout(2.0)
+    receive_timeout_count = 0
+    udp_socket.settimeout(TIMEOUT)
 
     if progress_callback is not None and total_bytes is not None:
         progress_callback(0, total_bytes)
@@ -274,6 +291,7 @@ def reliable_recv(
             seq = unpacked['seq']
 
             if respond_to_syn and flags == FLAG_SYN:
+                receive_timeout_count = 0
                 # Phản hồi SYN để xác nhận kết nối
                 syn_ack_packet = pack_packet(seq = 0, ack = seq, flags = FLAG_SYN | FLAG_ACK)
                 udp_socket.sendto(syn_ack_packet, sender_addr)
@@ -290,6 +308,7 @@ def reliable_recv(
                     ack_packet = pack_packet(seq = 0, ack = expected_seq, flags = FLAG_ACK)
                     udp_socket.sendto(ack_packet, sender_addr)
                     continue
+                receive_timeout_count = 0
                 ack_fin = pack_packet(seq = 0, ack = seq, flags = FLAG_FIN)
                 udp_socket.sendto(ack_fin, sender_addr)
                 _linger_after_fin(
@@ -303,6 +322,7 @@ def reliable_recv(
     
             # Xử lý gói DATA
             if flags == FLAG_DATA:
+                receive_timeout_count = 0
                 if seq == expected_seq:
                     # Nhận đúng gói mong đợi -> Đưa vào bộ đệm và tăng Sequence kỳ vọng
                     received_chunks[seq] = unpacked['payload']
@@ -325,7 +345,12 @@ def reliable_recv(
 
         except socket.timeout:
             _raise_if_cancelled(cancel_event)
-            continue
+            receive_timeout_count += 1
+            if receive_timeout_count >= DATA_MAX_RETRIES:
+                raise RDTDataTimeout(
+                    f"No valid DATA was received after "
+                    f"{DATA_MAX_RETRIES} consecutive timeouts."
+                )
 
     _raise_if_cancelled(cancel_event)
 

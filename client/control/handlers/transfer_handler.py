@@ -18,7 +18,12 @@ from client.control.context import ClientContext
 from shared.checksum import verify_checksum, compute_file_hash
 from shared.constants import BUFFER_SIZE, FLAG_ACK, FLAG_SYN, HEADER_SIZE
 from shared.packet_struct import pack_packet, unpack_packet
-from shared.rdt_core import RDTTeardownTimeout, reliable_recv, reliable_send
+from shared.rdt_core import (
+    RDTDataTimeout,
+    RDTTeardownTimeout,
+    reliable_recv,
+    reliable_send,
+)
 
 
 TRANSFER_SIZE_PATTERN = re.compile(r"\bBYTES=(\d+)\b", re.IGNORECASE)
@@ -222,6 +227,11 @@ def _send_upload_and_wait_for_completion(
             upload_data,
             progress_callback=make_progress_callback("Upload"),
         )
+    except RDTDataTimeout as error:
+        print(f"UDP data transfer timed out: {error}")
+        response = control.read_reply_line()
+        print(response)
+        return False
     except RDTTeardownTimeout as error:
         teardown_error = error
         print(f"UDP teardown was not acknowledged: {error}")
@@ -276,17 +286,25 @@ def handle_retr(control: ControlConnection, session: ClientContext, args: str | 
 
     if peer_address is not None:
         _send_passive_probe(data_socket, peer_address)
-    downloaded_data = reliable_recv(
-        data_socket,
-        total_bytes=total_bytes,
-        progress_callback=(
-            make_progress_callback("Download")
-            if total_bytes is not None
-            else None
-        ),
-        expected_peer=peer_address,
-        respond_to_syn=(session.data_connection_mode == "PASSIVE"),
-    )
+    try:
+        downloaded_data = reliable_recv(
+            data_socket,
+            total_bytes=total_bytes,
+            progress_callback=(
+                make_progress_callback("Download")
+                if total_bytes is not None
+                else None
+            ),
+            expected_peer=peer_address,
+            respond_to_syn=(session.data_connection_mode == "PASSIVE"),
+        )
+    except RDTDataTimeout as error:
+        print(f"Download timed out: {error}")
+        try:
+            print(control.read_reply_line())
+        except (ConnectionError, OSError) as reply_error:
+            print(f"Could not read the final RETR reply: {reply_error}")
+        return True
 
     try:
         processed_data = process_download_data(
