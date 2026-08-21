@@ -372,6 +372,7 @@ Project hiện tại là Hybrid FTP:
 - Client download vào `data/client_downloads/`.
 - Active Mode dùng lệnh `PORT <udp-port>`.
 - Passive Mode dùng `PASV`, server trả `UDP_PORT=<port>`.
+- Passive handshake retry tối đa 5 lần nếu SYN probe hoặc SYN-ACK bị mất trên Wi-Fi.
 - RDT dùng sequence number, cumulative ACK, checksum, timeout, retransmission, sliding window và FIN handshake.
 
 Server và client dùng hai vùng lưu trữ riêng. Lệnh `STOR active_test.bin` lưu file remote thành `data/server_storage/active_test.bin`; file local của client nằm trong `data/client_downloads/`.

@@ -93,7 +93,8 @@ Mục đích của phần này là mô tả chi tiết hành vi, API nội bộ,
 - Passive (`PASV`):
 	- server: create UDP socket, bind('', 0), session.passive_udp_socket = sock, return `227 ... UDP_PORT=<port>`.
 	- client: session.ensure_data_socket(); session.data_connection_mode='PASSIVE'; session.data_peer_address=(server_host, port).
-	- before data transfer, client sends a SYN probe to server passive port so server discovers client's UDP source address; server uses that as peer.
+	- before data transfer, client sends a SYN probe and waits for SYN-ACK; it retries up to 5 times (1 second/attempt).
+	- after discovery, passive server sender still responds to duplicate SYN, so a lost first SYN-ACK can be recovered while DATA retransmission continues.
 
 - Active (`PORT <udp-port>`):
 	- client: ensure UDP socket bound to specified local port; send `PORT <port>` to server.
@@ -122,6 +123,7 @@ Mục đích của phần này là mô tả chi tiết hành vi, API nội bộ,
 - `tests/test_transfer_cancellation_cleanup.py`: kiểm tra `ABOR` và cleanup thread/socket/session.
 - `tests/test_appe_stou.py`: kiểm tra `APPE` không hash sai phạm vi, metadata kích thước, tên UUID của `STOU` và hash theo `REMOTE_NAME`.
 - `tests/test_demo_readiness.py`: kiểm tra MODE B hai chiều, storage tách biệt, HELP STOU, STAT file, MDTM UTC và hash semantics của TYPE A.
+- `tests/test_passive_handshake_retry.py`: mô phỏng mất SYN probe và mất SYN-ACK để bảo vệ LIST/RETR/STOR/STOU/APPE trên Wi-Fi.
 
 Chạy toàn bộ suite:
 ```powershell

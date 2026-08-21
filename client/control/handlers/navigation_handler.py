@@ -1,14 +1,15 @@
 """Client-side handlers for navigation commands."""
 
 
-from shared.constants import FLAG_SYN
-from shared.packet_struct import pack_packet
 from shared.rdt_core import RDTDataTimeout, reliable_recv
 
 from client.control.client_control import ControlConnection, parse_reply
 from client.control.context import ClientContext
 from client.control.handlers.common import send_and_print
-from client.control.handlers.transfer_handler import _read_final_transfer_reply
+from client.control.handlers.transfer_handler import (
+    _open_passive_peer,
+    _read_final_transfer_reply,
+)
 
 
 def handle_pwd(control: ControlConnection) -> bool:
@@ -73,16 +74,28 @@ def handle_list(control: ControlConnection, session: ClientContext, args: str | 
     expected_peer = session.data_peer_address if session.data_connection_mode == "PASSIVE" else None
 
     def worker() -> None:
-        if session.data_connection_mode == "PASSIVE":
-            probe_packet = pack_packet(seq=0, ack=0, flags=FLAG_SYN)
-            data_socket.sendto(probe_packet, session.data_peer_address)
+        listing_peer = expected_peer
+        if listing_peer is not None:
+            try:
+                listing_peer = _open_passive_peer(
+                    data_socket,
+                    listing_peer,
+                    cancel_event=session.transfer_cancel_event,
+                )
+            except InterruptedError:
+                print("Directory listing cancellation requested.")
+                _read_final_transfer_reply(control, session)
+                return
+            except (OSError, TimeoutError) as error:
+                print(f"Could not open passive LIST data channel: {error}")
+                _read_final_transfer_reply(control, session)
+                return
 
         try:
             listing_data = reliable_recv(
                 data_socket,
                 cancel_event=session.transfer_cancel_event,
-                expected_peer=expected_peer,
-                respond_to_syn=(session.data_connection_mode == "PASSIVE"),
+                expected_peer=listing_peer,
             )
         except InterruptedError:
             print("Directory listing cancellation requested.")

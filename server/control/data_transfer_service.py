@@ -39,6 +39,7 @@ def send_data(session: ClientSession, data: bytes) -> None:
                 channel.peer,
                 data,
                 cancel_event=session.cancel_event,
+                respond_to_syn=channel.is_passive,
             )
     except InterruptedError:
         raise

@@ -30,22 +30,12 @@ from shared.rdt_core import (
 TRANSFER_SIZE_PATTERN = re.compile(r"\bBYTES=(\d+)\b", re.IGNORECASE)
 REMOTE_NAME_PATTERN = re.compile(r"\bREMOTE_NAME=([^\s]+)", re.IGNORECASE)
 ACTIVE_UPLOAD_HANDSHAKE_TIMEOUT = 6.0
-PASSIVE_UPLOAD_HANDSHAKE_TIMEOUT = 1.0
-PASSIVE_UPLOAD_HANDSHAKE_RETRIES = 5
+PASSIVE_HANDSHAKE_TIMEOUT = 1.0
+PASSIVE_HANDSHAKE_RETRIES = 5
 ABORT_SUCCESS_MESSAGE = "Abort command successful."
 
-def _send_passive_probe(
-    data_socket: socket.socket,
-    peer_address: tuple[str, int]
-) -> None:
-    probe_packet = pack_packet(
-        seq=0,
-        ack=0,
-        flags=FLAG_SYN
-    )
-    data_socket.sendto(probe_packet, peer_address)
 
-def _open_passive_upload_peer(
+def _open_passive_peer(
     data_socket: socket.socket,
     server_address: tuple[str, int],
     cancel_event=None,
@@ -53,11 +43,11 @@ def _open_passive_upload_peer(
     expected_server = (socket.gethostbyname(server_address[0]), server_address[1])
     syn_packet = pack_packet(seq=0,ack=0,flags=FLAG_SYN)
 
-    for attempt in range(PASSIVE_UPLOAD_HANDSHAKE_RETRIES):
+    for attempt in range(PASSIVE_HANDSHAKE_RETRIES):
         if cancel_event is not None and cancel_event.is_set():
             raise InterruptedError("Transfer aborted.")
         data_socket.sendto(syn_packet, expected_server)
-        deadline = time.monotonic() + PASSIVE_UPLOAD_HANDSHAKE_TIMEOUT
+        deadline = time.monotonic() + PASSIVE_HANDSHAKE_TIMEOUT
 
         while True:
             if cancel_event is not None and cancel_event.is_set():
@@ -69,7 +59,7 @@ def _open_passive_upload_peer(
             data_socket.settimeout(min(remaining, 0.1))
             try:
                 response, server_address = data_socket.recvfrom(BUFFER_SIZE)
-                print(f"[Passive Upload] Received packet from {server_address}")
+                print(f"[Passive Handshake] Received packet from {server_address}")
             except socket.timeout:
                 continue
 
@@ -77,21 +67,27 @@ def _open_passive_upload_peer(
                 continue
 
             if len(response) < HEADER_SIZE or not verify_checksum(response):
-                print(f"[Passive Upload] Ignoring invalid packet from {server_address}")
+                print(f"[Passive Handshake] Ignoring invalid packet from {server_address}")
                 continue
 
             try:
                 packet = unpack_packet(response)
             except ValueError:
-                print(f"[Passive Upload] Failed to unpack packet from {server_address}")
+                print(f"[Passive Handshake] Failed to unpack packet from {server_address}")
                 continue
 
             if packet["flags"] == (FLAG_SYN | FLAG_ACK) and packet["length"] == 0 and packet["payload"] == b"":
-                print(f"[Passive Upload] Received valid SYN-ACK from {server_address}")
+                print(f"[Passive Handshake] Received valid SYN-ACK from {server_address}")
                 return server_address
 
+        print(
+            "[Passive Handshake] No SYN-ACK; retrying "
+            f"({attempt + 1}/{PASSIVE_HANDSHAKE_RETRIES})."
+        )
+
     raise TimeoutError(
-        f"Failed to establish passive upload connection with {expected_server} after {PASSIVE_UPLOAD_HANDSHAKE_RETRIES} attempts."
+        f"Failed to establish passive data connection with {expected_server} "
+        f"after {PASSIVE_HANDSHAKE_RETRIES} attempts."
     )
 
 
@@ -167,7 +163,10 @@ def _wait_for_active_upload_peer(
         if len(response) < HEADER_SIZE or not verify_checksum(response):
             continue
 
-        packet = unpack_packet(response)
+        try:
+            packet = unpack_packet(response)
+        except ValueError:
+            continue
         if (
             packet["flags"] != FLAG_SYN
             or packet["length"] != 0
@@ -195,7 +194,7 @@ def _resolve_upload_peer(
     if configured_peer is None:
         raise RuntimeError("Passive upload peer is not configured.") 
 
-    return _open_passive_upload_peer(
+    return _open_passive_peer(
         data_socket,
         configured_peer,
         cancel_event=session.transfer_cancel_event,
@@ -372,8 +371,23 @@ def handle_retr(control: ControlConnection, session: ClientContext, args: str | 
     total_bytes = int(size_match.group(1)) if size_match else None
 
     def worker() -> None:
-        if peer_address is not None:
-            _send_passive_probe(data_socket, peer_address)
+        download_peer = peer_address
+        if download_peer is not None:
+            try:
+                download_peer = _open_passive_peer(
+                    data_socket,
+                    download_peer,
+                    cancel_event=session.transfer_cancel_event,
+                )
+            except InterruptedError:
+                print("Download cancellation requested.")
+                _read_final_transfer_reply(control, session)
+                return
+            except (OSError, TimeoutError) as error:
+                print(f"Could not open passive download data channel: {error}")
+                _read_final_transfer_reply(control, session)
+                return
+
         try:
             downloaded_data = reliable_recv(
                 data_socket,
@@ -384,8 +398,7 @@ def handle_retr(control: ControlConnection, session: ClientContext, args: str | 
                     else None
                 ),
                 cancel_event=session.transfer_cancel_event,
-                expected_peer=peer_address,
-                respond_to_syn=(session.data_connection_mode == "PASSIVE"),
+                expected_peer=download_peer,
             )
         except InterruptedError:
             print("Download cancellation requested.")

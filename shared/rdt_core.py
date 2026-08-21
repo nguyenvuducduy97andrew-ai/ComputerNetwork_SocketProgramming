@@ -103,6 +103,7 @@ def reliable_send(
     data_or_file_path,
     progress_callback: ProgressCallback | None = None,
     cancel_event: threading.Event | None = None,
+    respond_to_syn: bool = False,
 ) -> None:
     # API gửi file/dữ liệu tin cậy qua UDP sử dụng cơ chế Fast Retransmit (3 Duplicate ACKs) và thuật toán Sliding Window (Go-Back-N)
 
@@ -165,6 +166,23 @@ def reliable_send(
                 try:
                     unpacked = unpack_packet(resp)
                 except ValueError:
+                    continue
+                if (
+                    respond_to_syn
+                    and unpacked['flags'] == FLAG_SYN
+                    and unpacked['length'] == 0
+                    and unpacked['payload'] == b""
+                ):
+                    syn_ack = pack_packet(
+                        seq=0,
+                        ack=unpacked['seq'],
+                        flags=FLAG_SYN | FLAG_ACK,
+                    )
+                    udp_socket.sendto(syn_ack, dest_addr)
+                    # Client vẫn đang bắt tay nên chưa thể ACK DATA. Cho phiên
+                    # truyền một cửa sổ timeout mới để đủ thời gian retry SYN.
+                    data_retry_count = 0
+                    timer_start = time.monotonic()
                     continue
                 if unpacked['flags'] & FLAG_ACK:
                     ack_num = unpacked['ack']
