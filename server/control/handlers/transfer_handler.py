@@ -1,5 +1,5 @@
 from pathlib import Path
-from time import time
+from uuid import uuid4
 from collections.abc import Callable
 
 from server.control.command_result import CommandReplies, CommandReply
@@ -119,7 +119,7 @@ def handle_stou(session: ClientSession) -> CommandReplies:
     """Hàm xử lý lệnh STOU tạo một tệp duy nhất trên máy chủ và nhận dữ liệu từ client. Trả về các phản hồi FTP tương ứng."""
     print("[transfer_handler] Handling STOU command.")
 
-    unique_filename = f"file_{int(time())}.dat"
+    unique_filename = f"file_{uuid4().hex}.dat"
     try:
         file_path = resolve_session_path(session, unique_filename)
     except SessionPathError as exc:
@@ -132,11 +132,12 @@ def handle_stou(session: ClientSession) -> CommandReplies:
         file_path=file_path,
         append=False,
         preliminary_message=(
-            f"Ready to receive a uniquely named file as {unique_filename}."
+            "Ready to receive a uniquely named file. "
+            f"REMOTE_NAME={unique_filename}"
         ),
         completion_message=lambda received_size: (
-            f"File stored as {unique_filename} successfully. "
-            f"{received_size} bytes stored."
+            "File stored successfully. "
+            f"REMOTE_NAME={unique_filename} BYTES={received_size}"
         ),
     )
 
@@ -162,7 +163,7 @@ def handle_appe(session: ClientSession, args: str | None) -> CommandReplies:
         preliminary_message=f"Ready to append data to {file_path.name}.",
         completion_message=lambda received_size: (
             f"Data appended to {args} successfully. "
-            f"{received_size} bytes appended."
+            f"APPENDED_BYTES={received_size} FINAL_SIZE={file_path.stat().st_size}"
         ),
     )
 
@@ -170,10 +171,9 @@ def handle_appe(session: ClientSession, args: str | None) -> CommandReplies:
 def handle_abor(session: ClientSession) -> str:
     print("[transfer_handler] Handling ABOR command.")
 
-    if not session.transfer_in_progress:
+    if not session.request_abort(suppress_worker_reply=True):
         return FTPReplyCode.COMMAND_OK.format("No transfer in progress to abort.")
 
-    session.request_abort()
     session.close_current_data_socket()
     session.reset_data_connection()
     return FTPReplyCode.TRANSFER_COMPLETE.format("Abort command successful.")

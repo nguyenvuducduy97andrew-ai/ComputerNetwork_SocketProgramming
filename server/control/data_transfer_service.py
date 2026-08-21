@@ -15,7 +15,7 @@ from server.control.transfer_codec import (
     normalize_transfer_type,
 )
 from server.control.transfer_errors import DataTransferError
-from shared.rdt_core import reliable_recv, reliable_send
+from shared.rdt_core import RDTDataTimeout, reliable_recv, reliable_send
 
 
 def prepare_outgoing_file_data(
@@ -39,11 +39,14 @@ def send_data(session: ClientSession, data: bytes) -> None:
                 channel.peer,
                 data,
                 cancel_event=session.cancel_event,
+                respond_to_syn=channel.is_passive,
             )
     except InterruptedError:
         raise
     except DataTransferError:
         raise
+    except RDTDataTimeout as exc:
+        raise DataTransferError(str(exc)) from exc
     except Exception as exc:
         raise DataTransferError(
             "Failed to send data through the UDP channel."

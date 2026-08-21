@@ -59,7 +59,7 @@ HELP_COMMANDS = {
     },
     "STAT": {
         "syntax": "STAT [path]",
-        "description": "Return server status or file and directory metadata when a path is provided."
+        "description": "Return a detailed status listing for a file or directory."
     },
     "SIZE": {
         "syntax": "SIZE <filename>",
@@ -67,7 +67,7 @@ HELP_COMMANDS = {
     },
     "MDTM": {
         "syntax": "MDTM <filename>",
-        "description": "Return the last modification timestamp of the specified file in YYYYMMDDhhmmss format."
+        "description": "Return the UTC modification timestamp in YYYYMMDDhhmmss format."
     },
 
     "TYPE": {
@@ -84,7 +84,7 @@ HELP_COMMANDS = {
     },
     "PASV": {
         "syntax": "PASV",
-        "description": "Select Passive Mode. The server opens a data port and returns its IP address and port to the client."
+        "description": "Select Passive Mode. The server opens a UDP data port and returns UDP_PORT=<port>."
     },
 
     "RETR": {
@@ -96,8 +96,8 @@ HELP_COMMANDS = {
         "description": "Upload a file from the client and store it on the server using the specified filename."
     },
     "STOU": {
-        "syntax": "STOU",
-        "description": "Upload a file using a unique server-generated filename to prevent overwriting existing files."
+        "syntax": "STOU <local-file>",
+        "description": "Upload a local file using a unique server-generated remote filename."
     },
     "APPE": {
         "syntax": "APPE <filename>",
@@ -114,7 +114,7 @@ HELP_COMMANDS = {
     },
     "RNFR": {
         "syntax": "RNFR <oldname>",
-        "description": "Specify the existing file or directory name to be renamed. Must be followed by RNTO."
+        "description": "Specify the existing file to be renamed. Must be followed by RNTO."
     },
     "RNTO": {
         "syntax": "RNTO <newname>",
@@ -122,7 +122,7 @@ HELP_COMMANDS = {
     },
     "HASH": {
         "syntax": "HASH <filename>",
-        "description": "Return a cryptographic hash such as MD5 or SHA-256 for file integrity verification."
+        "description": "Return the SHA-256 hash used for file integrity verification."
     }
 }
 

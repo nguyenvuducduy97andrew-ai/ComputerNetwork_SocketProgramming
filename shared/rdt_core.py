@@ -13,6 +13,7 @@ from .constants import (
     WINDOW_SIZE,
     DUP_ACK_THRESHOLD,
     FLAG_SYN,
+    DATA_MAX_RETRIES,
     FIN_MAX_RETRIES,
     FIN_LINGER_TIMEOUT,
 )
@@ -27,6 +28,10 @@ ProgressCallback = Callable[[int, int], None] #Mục đích: callback để báo
 
 class RDTTeardownTimeout(TimeoutError):
     """Raised when the peer never confirms the FIN handshake."""
+
+
+class RDTDataTimeout(TimeoutError):
+    """Raised when DATA cannot make progress within the retry limit."""
 
 
 def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
@@ -98,6 +103,7 @@ def reliable_send(
     data_or_file_path,
     progress_callback: ProgressCallback | None = None,
     cancel_event: threading.Event | None = None,
+    respond_to_syn: bool = False,
 ) -> None:
     # API gửi file/dữ liệu tin cậy qua UDP sử dụng cơ chế Fast Retransmit (3 Duplicate ACKs) và thuật toán Sliding Window (Go-Back-N)
 
@@ -117,21 +123,28 @@ def reliable_send(
     if progress_callback is not None:
         progress_callback(0, total_bytes)
 
-    # Phân đoạn dữ liệu thành danh sách các gói tin
-    chunks = [raw_data[i:i + MAX_PAYLOAD] for i in range(0, len(raw_data), MAX_PAYLOAD)]
-    total_packets = len(chunks)
+    # Chỉ giữ một bản payload trong RAM. Packet được đóng gói theo nhu cầu
+    # thay vì tạo thêm danh sách chunks và packets cho toàn bộ file.
+    total_packets = max(
+        1,
+        (total_bytes + MAX_PAYLOAD - 1) // MAX_PAYLOAD,
+    )
 
-    if total_packets == 0:
-        chunks = [b'']
-        total_packets = 1
-
-    packets = [pack_packet(seq = i, ack = 0, flags = FLAG_DATA, data = chunks[i]) for i in range(total_packets)]
+    def make_data_packet(sequence_number: int) -> bytes:
+        start = sequence_number * MAX_PAYLOAD
+        payload = raw_data[start:start + MAX_PAYLOAD]
+        return pack_packet(
+            seq=sequence_number,
+            ack=0,
+            flags=FLAG_DATA,
+            data=payload,
+        )
 
     # Khởi tạo trạng thái cửa sổ trượt (Sliding Window)
     base = 0
     next_seq_num = 0
     dup_ack_count = 0
-    last_ack_received = -1
+    data_retry_count = 0
     timer_start = 0.0
 
     udp_socket.settimeout(0.01)  # Non-blocking polling cho việc nhận ACK liên tục
@@ -141,7 +154,7 @@ def reliable_send(
         # Gửi tất cả các gói tin còn nằm trong phạm vi Cửa sổ
         while next_seq_num < base + WINDOW_SIZE and next_seq_num < total_packets:
             _raise_if_cancelled(cancel_event)
-            udp_socket.sendto(packets[next_seq_num], dest_addr)
+            udp_socket.sendto(make_data_packet(next_seq_num), dest_addr)
             if base == next_seq_num:
                 timer_start = time.monotonic()  # Bật Timer cho gói tin nhỏ nhất chưa ACK
             next_seq_num += 1
@@ -149,10 +162,28 @@ def reliable_send(
         # Lắng nghe ACK phản hồi từ phía Nhận
         try:
             resp, sender_addr = udp_socket.recvfrom(BUFFER_SIZE)
-            if sender_addr != expected_peer:
-                continue
-            if verify_checksum(resp):
-                unpacked = unpack_packet(resp)
+            if sender_addr == expected_peer and verify_checksum(resp):
+                try:
+                    unpacked = unpack_packet(resp)
+                except ValueError:
+                    continue
+                if (
+                    respond_to_syn
+                    and unpacked['flags'] == FLAG_SYN
+                    and unpacked['length'] == 0
+                    and unpacked['payload'] == b""
+                ):
+                    syn_ack = pack_packet(
+                        seq=0,
+                        ack=unpacked['seq'],
+                        flags=FLAG_SYN | FLAG_ACK,
+                    )
+                    udp_socket.sendto(syn_ack, dest_addr)
+                    # Client vẫn đang bắt tay nên chưa thể ACK DATA. Cho phiên
+                    # truyền một cửa sổ timeout mới để đủ thời gian retry SYN.
+                    data_retry_count = 0
+                    timer_start = time.monotonic()
+                    continue
                 if unpacked['flags'] & FLAG_ACK:
                     ack_num = unpacked['ack']
 
@@ -169,6 +200,7 @@ def reliable_send(
                                 total_bytes,
                             )
                         dup_ack_count = 0
+                        data_retry_count = 0
                         if base < next_seq_num:
                             timer_start = time.monotonic()  # Reset timer cho gói chưa ACK tiếp theo
                     elif ack_num == base:
@@ -176,7 +208,13 @@ def reliable_send(
                         dup_ack_count += 1
                         if dup_ack_count == DUP_ACK_THRESHOLD:
                             # FAST RETRANSMIT: Gửi lại ngay lập tức gói 'base' bị mất
-                            udp_socket.sendto(packets[base], dest_addr)
+                            if data_retry_count >= DATA_MAX_RETRIES:
+                                raise RDTDataTimeout(
+                                    f"DATA sequence {base} was not acknowledged "
+                                    f"after {DATA_MAX_RETRIES} retries."
+                                )
+                            udp_socket.sendto(make_data_packet(base), dest_addr)
+                            data_retry_count += 1
                             timer_start = time.monotonic()
                             dup_ack_count = 0
         except socket.timeout:
@@ -184,9 +222,15 @@ def reliable_send(
 
         # Kiểm tra Timeout (RTO) -> Truyền lại toàn bộ gói trong cửa sổ hiện tại (Go-Back-N)
         if base < next_seq_num and (time.monotonic() - timer_start) > TIMEOUT:
+            if data_retry_count >= DATA_MAX_RETRIES:
+                raise RDTDataTimeout(
+                    f"DATA sequence {base} was not acknowledged "
+                    f"after {DATA_MAX_RETRIES} retries."
+                )
             for i in range(base, next_seq_num):
                 _raise_if_cancelled(cancel_event)
-                udp_socket.sendto(packets[i], dest_addr)
+                udp_socket.sendto(make_data_packet(i), dest_addr)
+            data_retry_count += 1
             timer_start = time.monotonic()
 
     if progress_callback is not None:
@@ -249,10 +293,11 @@ def reliable_recv(
     if expected_peer is not None:
         expected_peer = _normalize_peer_address(expected_peer)
 
-    received_chunks = {}
+    received_data = bytearray()
     expected_seq = 0
     received_bytes = 0
-    udp_socket.settimeout(2.0)
+    receive_timeout_count = 0
+    udp_socket.settimeout(TIMEOUT)
 
     if progress_callback is not None and total_bytes is not None:
         progress_callback(0, total_bytes)
@@ -269,11 +314,15 @@ def reliable_recv(
             if not verify_checksum(packet_bytes):
                 continue
                 
-            unpacked = unpack_packet(packet_bytes)
+            try:
+                unpacked = unpack_packet(packet_bytes)
+            except ValueError:
+                continue
             flags = unpacked['flags']
             seq = unpacked['seq']
 
             if respond_to_syn and flags == FLAG_SYN:
+                receive_timeout_count = 0
                 # Phản hồi SYN để xác nhận kết nối
                 syn_ack_packet = pack_packet(seq = 0, ack = seq, flags = FLAG_SYN | FLAG_ACK)
                 udp_socket.sendto(syn_ack_packet, sender_addr)
@@ -290,6 +339,7 @@ def reliable_recv(
                     ack_packet = pack_packet(seq = 0, ack = expected_seq, flags = FLAG_ACK)
                     udp_socket.sendto(ack_packet, sender_addr)
                     continue
+                receive_timeout_count = 0
                 ack_fin = pack_packet(seq = 0, ack = seq, flags = FLAG_FIN)
                 udp_socket.sendto(ack_fin, sender_addr)
                 _linger_after_fin(
@@ -303,9 +353,10 @@ def reliable_recv(
     
             # Xử lý gói DATA
             if flags == FLAG_DATA:
+                receive_timeout_count = 0
                 if seq == expected_seq:
                     # Nhận đúng gói mong đợi -> Đưa vào bộ đệm và tăng Sequence kỳ vọng
-                    received_chunks[seq] = unpacked['payload']
+                    received_data.extend(unpacked['payload'])
                     expected_seq += 1
                     received_bytes += len(unpacked['payload'])
 
@@ -325,24 +376,23 @@ def reliable_recv(
 
         except socket.timeout:
             _raise_if_cancelled(cancel_event)
-            continue
+            receive_timeout_count += 1
+            if receive_timeout_count >= DATA_MAX_RETRIES:
+                raise RDTDataTimeout(
+                    f"No valid DATA was received after "
+                    f"{DATA_MAX_RETRIES} consecutive timeouts."
+                )
 
     _raise_if_cancelled(cancel_event)
-
-    # Ráp lại toàn bộ payload theo đúng thứ tự Sequence Number
-    full_data = bytearray()
-    for i in range(expected_seq):
-        if i in received_chunks:
-            full_data.extend(received_chunks[i])
 
     if save_file_path:
         dir_name = os.path.dirname(save_file_path)
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
         with open(save_file_path, 'wb') as f:
-            f.write(full_data)
+            f.write(received_data)
 
     if progress_callback is not None and total_bytes is not None:
         progress_callback(total_bytes, total_bytes)
 
-    return bytes(full_data)
+    return bytes(received_data)

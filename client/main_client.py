@@ -59,7 +59,10 @@ def run_client(
             "Type QUIT to exit."
         )
 
-        context = ClientContext(server_host=host)
+        context = ClientContext(
+            server_host=host,
+            show_prompt_on_transfer_end=True,
+        )
 
         try:
             while True:

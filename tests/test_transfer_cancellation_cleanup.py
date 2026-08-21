@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from server.control.data_transfer_service import receive_file
+from server.control.handlers.transfer_handler import handle_abor
 from server.control.session import ClientSession
 from shared.rdt_core import reliable_recv, reliable_send
 from tests.reporting import VietnameseTestCase
@@ -130,6 +131,43 @@ class SessionCleanupTests(VietnameseTestCase):
             with self.assertRaises(socket.timeout):
                 control_client.recv(1024)
             control_server.close()
+
+    def test_abor_suppresses_late_worker_reply(self) -> None:
+        """ABOR trả đúng một reply và loại bỏ reply muộn của worker"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            control_server, control_client = socket.socketpair()
+            self.addCleanup(control_server.close)
+            self.addCleanup(control_client.close)
+            session = ClientSession(
+                client_address=(LOOPBACK, 2121),
+                server_root=Path(temp_dir),
+            )
+            session.control_conn = control_server
+            session.start_transfer(
+                "STOR",
+                Path(temp_dir) / "aborted.bin",
+                direction="UPLOAD",
+            )
+
+            def worker() -> str:
+                session.cancel_event.wait(2.0)
+                raise InterruptedError("Transfer aborted.")
+
+            session.run_transfer(worker)
+            reply = handle_abor(session)
+            self.assertTrue(reply.startswith("226 Abort command successful."))
+
+            worker_thread = session.transfer_thread
+            if worker_thread is not None:
+                worker_thread.join(2.0)
+            self.assertFalse(session.transfer_in_progress)
+            self.assertIsNone(session.transfer_thread)
+
+            # handle_abor trả reply cho control thread gửi; bản thân worker
+            # không được phép đẩy thêm 426 vào socket.
+            control_client.settimeout(0.1)
+            with self.assertRaises(socket.timeout):
+                control_client.recv(1024)
 
 
 if __name__ == "__main__":

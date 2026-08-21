@@ -1,13 +1,15 @@
 """Client-side handlers for navigation commands."""
 
 
-from shared.constants import FLAG_SYN
-from shared.packet_struct import pack_packet
-from shared.rdt_core import reliable_recv
+from shared.rdt_core import RDTDataTimeout, reliable_recv
 
 from client.control.client_control import ControlConnection, parse_reply
 from client.control.context import ClientContext
 from client.control.handlers.common import send_and_print
+from client.control.handlers.transfer_handler import (
+    _open_passive_peer,
+    _read_final_transfer_reply,
+)
 
 
 def handle_pwd(control: ControlConnection) -> bool:
@@ -69,22 +71,53 @@ def handle_list(control: ControlConnection, session: ClientContext, args: str | 
     if code not in {125, 150}:
         return True
 
-    if session.data_connection_mode == "PASSIVE":
-        probe_packet = pack_packet(seq=0, ack=0, flags=FLAG_SYN)
-        data_socket.sendto(probe_packet, session.data_peer_address)
-
     expected_peer = session.data_peer_address if session.data_connection_mode == "PASSIVE" else None
 
-    listing_data = reliable_recv(data_socket, expected_peer=expected_peer, respond_to_syn=(session.data_connection_mode == "PASSIVE"))
-    listing = listing_data.decode("utf-8", errors="replace")
+    def worker() -> None:
+        listing_peer = expected_peer
+        if listing_peer is not None:
+            try:
+                listing_peer = _open_passive_peer(
+                    data_socket,
+                    listing_peer,
+                    cancel_event=session.transfer_cancel_event,
+                )
+            except InterruptedError:
+                print("Directory listing cancellation requested.")
+                _read_final_transfer_reply(control, session)
+                return
+            except (OSError, TimeoutError) as error:
+                print(f"Could not open passive LIST data channel: {error}")
+                _read_final_transfer_reply(control, session)
+                return
 
-    if listing:
-        print(listing)
-    else:
-        print("(empty directory)")
+        try:
+            listing_data = reliable_recv(
+                data_socket,
+                cancel_event=session.transfer_cancel_event,
+                expected_peer=listing_peer,
+            )
+        except InterruptedError:
+            print("Directory listing cancellation requested.")
+            _read_final_transfer_reply(control, session)
+            return
+        except RDTDataTimeout as error:
+            print(f"Directory listing timed out: {error}")
+            try:
+                _read_final_transfer_reply(control, session)
+            except (ConnectionError, OSError) as reply_error:
+                print(f"Could not read the final LIST reply: {reply_error}")
+            return
 
-    response = control.read_reply_line()
-    print(response)
+        listing = listing_data.decode("utf-8", errors="replace")
+        if listing:
+            print(listing)
+        else:
+            print("(empty directory)")
+        _read_final_transfer_reply(control, session)
+
+    session.start_transfer(worker)
+    print("Transfer started in background. Enter ABOR to cancel it.")
     return True
 
 def handle_nlst(control: ControlConnection, args: str | None) -> bool:
