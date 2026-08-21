@@ -7,6 +7,8 @@ from server.control.ftp_codes import FTPReplyCode
 from server.control.command_handler import handle_command
 from server.control.session import ClientSession
 
+from shared.constants import MAX_COMMAND_LENGTH, CONTROL_TIMEOUT_SEC
+
 
 DEFAULT_SERVER_ROOT = Path("data") / "server_storage"
 
@@ -15,6 +17,7 @@ DEFAULT_SERVER_ROOT = Path("data") / "server_storage"
 def handle_client(conn: socket.socket, addr: tuple[str, int], server_root: Path) -> None:
     """Per-connection handler: send welcome, receive commands, respond."""
     with conn:
+        conn.settimeout(CONTROL_TIMEOUT_SEC) #Phòng thủ 1: Nếu client ngâm kết nối quá lâu, server sẽ tự động đóng kết nối để tránh chiếm tài nguyên vô hạn
         session: ClientSession | None = None
         try:
             # Send initial service ready message
@@ -26,14 +29,30 @@ def handle_client(conn: socket.socket, addr: tuple[str, int], server_root: Path)
             buffer = bytearray()
 
             while True:
-                data = conn.recv(1024)
-                if not data:
+                try: 
+                    data = conn.recv(1024)
+                    if not data:
+                        break
+                    buffer.extend(data)
+                except socket.timeout:
+                    print(f"[{addr[0]}:{addr[1]}] Control connection timeout. Closing connection.")
+                    conn.sendall(FTPReplyCode.SERVICE_UNAVAILABLE.format().encode())
                     break
-                buffer.extend(data)
+
+                if b"\r\n" not in buffer and len(buffer) > MAX_COMMAND_LENGTH:
+                    print(f"[{addr[0]}:{addr[1]}] Command length exceeded. Closing connection.(DoS attack prevention)")
+                    conn.sendall(FTPReplyCode.SYNTAX_ERROR.format().encode())
+                    break
 
                 while b"\r\n" in buffer:
                     raw_line, _, remaining = buffer.partition(b"\r\n")
                     buffer = bytearray(remaining)
+
+                    if len(raw_line) > MAX_COMMAND_LENGTH:
+                        print(f"[{addr[0]}:{addr[1]}] Command length exceeded. Closing connection.(DoS attack prevention)")
+                        conn.sendall(FTPReplyCode.SYNTAX_ERROR.format().encode())
+                        return
+
                     line = raw_line.decode('utf-8', errors='ignore').strip('\r\n')
                     if not line:
                         continue

@@ -18,3 +18,7 @@ FLAG_SYN = 0b00000001 # Bit 0: Khởi tạo kết nối RDT
 FLAG_ACK = 0b00000010 # Bit 1: Gói tin xác nhận
 FLAG_FIN = 0b00000100 # Bit 2: Báo hiệu kết thúc truyền file
 FLAG_DATA = 0b00001000 # Bit 3: Gói tin chứa dữ liệu
+
+#----Cấu hình FTP----
+MAX_COMMAND_LENGTH = 4096  # Max 4KB cho 1 lệnh FTP (Tránh tràn RAM)
+CONTROL_TIMEOUT_SEC = 30.0  # Timeout 30 giây nếu client ngâm kết nối
