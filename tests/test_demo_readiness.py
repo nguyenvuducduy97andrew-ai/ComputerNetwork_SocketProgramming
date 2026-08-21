@@ -1,12 +1,13 @@
 import os
 import socket
+import stat
 import tempfile
 import unittest
 from collections import deque
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from client.control.context import ClientContext
 from client.control.data_transfer_service import (
@@ -15,7 +16,12 @@ from client.control.data_transfer_service import (
 )
 from client.control.handlers.transfer_handler import handle_stor
 from server.control.handlers.common_handler import handle_help
-from server.control.handlers.navigation_handler import handle_mdtm, handle_stat
+from server.control.handlers.navigation_handler import (
+    _remove_empty_directory,
+    handle_mdtm,
+    handle_rmd,
+    handle_stat,
+)
 from server.control.session import ClientSession
 from server.control.transfer_codec import decode_from_transfer, encode_for_transfer
 from server.main_server import DEFAULT_SERVER_ROOT
@@ -127,6 +133,51 @@ class CommandConsistencyTests(VietnameseTestCase):
             reply = handle_mdtm(session, "sample.txt")
 
         self.assertEqual(reply, "213 20240102030405\r\n")
+
+    def test_rmd_removes_an_empty_directory(self) -> None:
+        """RMD xóa được thư mục rỗng"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server_root = Path(temp_dir)
+            target = server_root / "empty"
+            target.mkdir()
+            session = ClientSession(
+                client_address=("127.0.0.1", 2121),
+                server_root=server_root,
+            )
+
+            reply = handle_rmd(session, "empty")
+
+            self.assertEqual(reply, "250 Removed directory empty\r\n")
+            self.assertFalse(target.exists())
+
+    def test_rmd_keeps_a_non_empty_directory(self) -> None:
+        """RMD từ chối thư mục có dữ liệu và không xóa nhầm nội dung"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server_root = Path(temp_dir)
+            target = server_root / "non-empty"
+            target.mkdir()
+            (target / "keep.txt").write_text("keep", encoding="utf-8")
+            session = ClientSession(
+                client_address=("127.0.0.1", 2121),
+                server_root=server_root,
+            )
+
+            reply = handle_rmd(session, "non-empty")
+
+            self.assertEqual(reply, "550 Directory is not empty.\r\n")
+            self.assertTrue((target / "keep.txt").is_file())
+
+    def test_rmd_retries_a_read_only_onedrive_directory_on_windows(self) -> None:
+        """RMD bỏ cờ read-only và thử lại cho thư mục OneDrive trên Windows"""
+        target = MagicMock(spec=Path)
+        target.rmdir.side_effect = [PermissionError(13, "Access denied"), None]
+        target.stat.return_value.st_mode = stat.S_IREAD
+
+        with patch("server.control.handlers.navigation_handler.os.name", "nt"):
+            _remove_empty_directory(target)
+
+        self.assertEqual(target.rmdir.call_count, 2)
+        target.chmod.assert_called_once_with(stat.S_IREAD | stat.S_IWRITE)
 
     def test_type_a_upload_skips_byte_hash_verification(self) -> None:
         """TYPE A không báo hash mismatch giả do chuyển đổi newline"""
