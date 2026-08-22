@@ -15,6 +15,8 @@ from server.control.filesystem_service import (
 
 from pathlib import Path
 from datetime import datetime, timezone
+import errno
+import os
 import stat
 
 # Xử lý các lệnh liên quan đến điều hướng thư mục: PWD, CWD, CDUP
@@ -112,6 +114,32 @@ def handle_mkd(session: ClientSession, args: str | None) -> str:
         print(f"[navigation_handler] Error creating directory: {e}")
         return FTPReplyCode.FILE_UNAVAILABLE.format("Failed to create directory.")
 
+
+def _remove_empty_directory(target_directory: Path) -> None:
+    """Remove an empty directory, including a read-only OneDrive folder on Windows."""
+    try:
+        target_directory.rmdir()
+        return
+    except PermissionError:
+        if os.name != "nt":
+            raise
+
+    # OneDrive Files On-Demand can mark an otherwise empty directory as
+    # read-only/reparse-point. Windows then rejects rmdir() with WinError 5.
+    # rmdir() is still used here (never recursive), so a non-empty directory
+    # cannot be deleted by this workaround.
+    original_mode = target_directory.stat().st_mode
+    try:
+        target_directory.chmod(original_mode | stat.S_IWRITE)
+        target_directory.rmdir()
+    except Exception:
+        if target_directory.exists():
+            try:
+                target_directory.chmod(original_mode)
+            except OSError:
+                pass
+        raise
+
 def handle_rmd(session: ClientSession, args: str | None) -> str:
     print(f"[navigation_handler] Handling RMD command for directory: {args!r}")
     if not args:
@@ -123,12 +151,20 @@ def handle_rmd(session: ClientSession, args: str | None) -> str:
         return FTPReplyCode.FILE_UNAVAILABLE.format(str(exc))
 
     try:
-        target_directory.rmdir()
+        _remove_empty_directory(target_directory)
         return FTPReplyCode.FILE_ACTION_OK.format(f"Removed directory {target_directory.name}")
     except FileNotFoundError:
         return FTPReplyCode.FILE_UNAVAILABLE.format("Directory does not exist.")
-    except OSError:
-        return FTPReplyCode.FILE_UNAVAILABLE.format("Directory is not empty or cannot be removed.")
+    except OSError as exc:
+        print(f"[navigation_handler] Error removing directory: {exc}")
+        if (
+            exc.errno in {errno.ENOTEMPTY, errno.EEXIST}
+            or getattr(exc, "winerror", None) == 145
+        ):
+            return FTPReplyCode.FILE_UNAVAILABLE.format("Directory is not empty.")
+        if isinstance(exc, PermissionError):
+            return FTPReplyCode.FILE_UNAVAILABLE.format("Access denied while removing directory.")
+        return FTPReplyCode.FILE_UNAVAILABLE.format("Directory could not be removed.")
     except Exception as e:
         print(f"[navigation_handler] Error removing directory: {e}")
         return FTPReplyCode.FILE_UNAVAILABLE.format("Failed to remove directory.")
